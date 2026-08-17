@@ -1,10 +1,13 @@
 import math
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
+import numpy as np
 import torch
 from datasets import load_dataset
 from torch import nn
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from do_bsfs_suck.arch import blocks as _model_blocks
@@ -35,7 +38,7 @@ def _capture(model: nn.Module, layers: tuple[int, ...]):
             h.remove()
 
 
-def token_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
+def _corpus_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
     """(batch_seqs, seq_len) int64, packed end to end from the corpus."""
     ds = load_dataset(cfg.dataset, split="train", streaming=True)
     ds = ds.shuffle(seed=cfg.data_seed, buffer_size=10_000)
@@ -48,6 +51,63 @@ def token_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
         while len(buf) >= need:
             chunk, buf = buf[:need], buf[need:]
             yield torch.tensor(chunk, dtype=torch.long).view(cfg.batch_seqs, cfg.seq_len)
+
+
+def cache_path(cfg: StreamConfig) -> Path:
+    slug = f"{cfg.model}__{cfg.dataset}".replace("/", "--")
+    return Path(cfg.cache_dir) / f"{slug}_s{cfg.data_seed}_L{cfg.seq_len}_n{cfg.n_tokens}.npy"
+
+
+def raw_tokens(cfg: StreamConfig) -> int:
+    """Corpus tokens needed to yield cfg.n_tokens usable ones, rounded to whole
+    batches. drop_first is discarded per sequence, so raw > usable."""
+    per_yield = cfg.batch_seqs * (cfg.seq_len - cfg.drop_first)
+    n_yields = -(-cfg.n_tokens // per_yield)
+    return n_yields * cfg.seq_len * cfg.batch_seqs
+
+
+def build_token_cache(cfg: StreamConfig, tokenizer, path: Path) -> None:
+    total = raw_tokens(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".building.npy")
+    arr = np.lib.format.open_memmap(tmp, mode="w+", dtype=np.int32, shape=(total,))
+
+    filled = 0
+    bar = tqdm(total=total, desc=f"tokenizing {path.name}", unit="tok", unit_scale=True)
+    for ids in _corpus_batches(cfg, tokenizer):
+        flat = ids.reshape(-1).numpy()
+        take = min(len(flat), total - filled)
+        arr[filled : filled + take] = flat[:take]
+        filled += take
+        bar.update(take)
+        if filled >= total:
+            break
+    bar.close()
+    arr.flush()
+    del arr
+
+    if filled < total:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"corpus exhausted at {filled} of {total} tokens")
+    # rename last: a killed build leaves no cache rather than a short one that
+    # would silently truncate every later run
+    tmp.rename(path)
+
+
+def token_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
+    if cfg.cache_dir is None:
+        yield from _corpus_batches(cfg, tokenizer)
+        return
+
+    path = cache_path(cfg)
+    if not path.exists():
+        build_token_cache(cfg, tokenizer, path)
+
+    ids = np.load(path, mmap_mode="r")
+    need = cfg.seq_len * cfg.batch_seqs
+    for start in range(0, len(ids) - need + 1, need):
+        chunk = np.asarray(ids[start : start + need], dtype=np.int64)
+        yield torch.from_numpy(chunk).view(cfg.batch_seqs, cfg.seq_len)
 
 
 class ActivationStream:

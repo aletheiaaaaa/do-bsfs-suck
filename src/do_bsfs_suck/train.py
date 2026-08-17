@@ -54,16 +54,33 @@ def cotrain(
     device: str = "cpu",
     directions: dict[int, torch.Tensor] | None = None,
 ) -> list[Run]:
-    """Train every featurizer for every layer against a single pass of the stream.
+    """Train every featurizer for every layer, in groups of tcfg.parallel.
 
-    The model forward dominates cost, so it is paid once per condition rather
-    than once per run.
+    Each group gets its own pass of the stream, so the model forward is paid
+    once per group rather than once per run. Groups are bounded because every
+    resident run carries its own Adam state: all 162 runs of the main grid at
+    once is ~32GB of optimizer state before a single activation.
     """
     runs = make_runs(specs, tcfg.lr, device, directions)
-    layers = sorted(specs)
+    size = max(tcfg.parallel, 1)
+    groups = [runs[i : i + size] for i in range(0, len(runs), size)]
+    for n, group in enumerate(groups, 1):
+        _train_group(stream, group, tcfg, device, f"{stream.cfg.condition} {n}/{len(groups)}")
+    return runs
+
+
+def _train_group(
+    stream: ActivationStream,
+    runs: list[Run],
+    tcfg: TrainConfig,
+    device: str,
+    desc: str,
+) -> None:
+    # one forward captures every layer, so a group spanning layers is free
+    layers = sorted({r.layer for r in runs})
     total_steps = max(stream.cfg.n_tokens // tcfg.batch_tokens, 1)
     step = 0
-    bar = tqdm(total=total_steps, desc=stream.cfg.condition)
+    bar = tqdm(total=total_steps, desc=desc)
 
     # a stream yield is batch_seqs*(seq_len-drop_first) tokens, which need not be
     # a multiple of batch_tokens -- so buffer across yields rather than dropping
@@ -80,13 +97,13 @@ def cotrain(
             continue
 
         pooled = {i: torch.cat(buf[i]) for i in layers}
-        buf = {i: [] for i in layers}
-        held = 0
 
         n = next(iter(pooled.values())).shape[0]
         perm = torch.randperm(n, device=device)
+        used = 0
         for start in range(0, n - tcfg.batch_tokens + 1, tcfg.batch_tokens):
             idx = perm[start : start + tcfg.batch_tokens]
+            used = start + tcfg.batch_tokens
             scale = _lr_scale(step, total_steps, tcfg.warmup_frac)
 
             for run in runs:
@@ -117,7 +134,15 @@ def cotrain(
             bar.update(1)
             if step >= total_steps:
                 bar.close()
-                return runs
+                return
+
+        # carry the unconsumed tail forward. A yield is batch_seqs*(seq_len-1)
+        # tokens and need not divide batch_tokens: dropping the remainder cost
+        # 50% of the corpus at 8176/4096, and ended the run at half the bar
+        # without erroring.
+        rest = perm[used:]
+        buf = {i: [pooled[i][rest]] for i in layers}
+        held = int(rest.numel())
 
     bar.close()
     if step == 0:
@@ -125,4 +150,3 @@ def cotrain(
             f"trained 0 steps: stream produced fewer than batch_tokens="
             f"{tcfg.batch_tokens} usable tokens"
         )
-    return runs

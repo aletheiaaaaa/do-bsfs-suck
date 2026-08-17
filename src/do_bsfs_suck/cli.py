@@ -36,11 +36,19 @@ def make_parser() -> argparse.ArgumentParser:
         "--conditions", nargs="+", default=list(COMPARISON + NULLS),
         help=f"comparison arms {COMPARISON}; nulls {NULLS}",
     )
-    sweep.add_argument("--tokens", type=int, default=50_000_000)
+    sweep.add_argument("--tokens", type=int, default=1_000_000_000)
     sweep.add_argument("--eval-tokens", type=int, default=2_000_000)
     sweep.add_argument("--dict-dims", type=int, default=16384)
     sweep.add_argument("--batch-tokens", type=int, default=4096)
     sweep.add_argument("--lr", type=float, default=3e-4)
+    sweep.add_argument(
+        "--parallel", type=int, default=8,
+        help="featurizers trained per stream pass; each carries its own Adam state",
+    )
+    sweep.add_argument(
+        "--cache-dir", type=Path, default=None,
+        help="memmap tokenized ids here (~4GB per 1B tokens); omit to re-tokenize every pass",
+    )
     sweep.add_argument("--device", default="cpu")
     sweep.add_argument("--seed", type=int, default=0)
     sweep.add_argument("--out", type=Path, default=Path("results/sweep.json"))
@@ -75,7 +83,8 @@ def _sweep(args: argparse.Namespace) -> None:
             n_tokens=200_000, eval_tokens=40_000,
             dataset=args.dataset or SMOKE_DATASET,
             out_path=args.out, device=args.device, seed=args.seed,
-            spec=spec, train_cfg=TrainConfig(batch_tokens=1024, lr=args.lr),
+            spec=spec, cache_dir=args.cache_dir,
+            train_cfg=TrainConfig(batch_tokens=1024, lr=args.lr, parallel=args.parallel),
         )
         return
 
@@ -91,8 +100,10 @@ def _sweep(args: argparse.Namespace) -> None:
         n_tokens=args.tokens,
         eval_tokens=args.eval_tokens,
         dataset=args.dataset or "monology/pile-uncopyrighted", out_path=args.out,
-        device=args.device, seed=args.seed, spec=spec,
-        train_cfg=TrainConfig(batch_tokens=args.batch_tokens, lr=args.lr),
+        device=args.device, seed=args.seed, spec=spec, cache_dir=args.cache_dir,
+        train_cfg=TrainConfig(
+            batch_tokens=args.batch_tokens, lr=args.lr, parallel=args.parallel
+        ),
     )
 
 

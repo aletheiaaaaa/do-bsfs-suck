@@ -61,7 +61,7 @@ class StreamConfig:
     condition: Condition = "trained"
     layers: tuple[int, ...] = (3, 6, 9)
     dataset: str = "monology/pile-uncopyrighted"
-    n_tokens: int = 50_000_000
+    n_tokens: int = 1_000_000_000
     seq_len: int = 512
     batch_seqs: int = 16
     # position 0 of a residual stream is an outlier and would dominate recon
@@ -71,6 +71,9 @@ class StreamConfig:
     # corpus order only. held-out eval data must vary this, never `seed`, or the
     # eval runs against a differently-randomized model than training did
     data_seed: int = 0
+    # where to memmap tokenized ids. None re-streams and re-tokenizes the corpus
+    # on every pass, which is CPU-bound and repeated once per parallel group
+    cache_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,7 +81,10 @@ class TrainConfig:
     lr: float = 3e-4
     batch_tokens: int = 4096
     warmup_frac: float = 0.02
-    dead_after_tokens: int = 4_000_000
+    # featurizers trained per stream pass. Each carries its own Adam state, so
+    # this trades resident memory against how often the corpus is re-run
+    parallel: int = 8
+    dead_after_tokens: int = 10_000_000
     aux_k: int = 64
     aux_coeff: float = 1.0 / 32.0
     grad_clip: float = 1.0

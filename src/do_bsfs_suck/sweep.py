@@ -210,6 +210,7 @@ def run_sweep(
     seed: int = 0,
     spec: RandomizeSpec = RandomizeSpec(),
     train_cfg: TrainConfig = TrainConfig(),
+    cache_dir: Path | None = None,
 ) -> list[dict]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     rows: list[dict] = []
@@ -221,6 +222,7 @@ def run_sweep(
         scfg = StreamConfig(
             model=model_name, condition=condition, layers=layers,
             dataset=dataset, n_tokens=n_tokens, seed=seed, data_seed=seed,
+            cache_dir=str(cache_dir) if cache_dir else None,
         )
         stream = ActivationStream(scfg, spec, device=device)
         cfgs = grid(stream.d_model, seed=seed)
