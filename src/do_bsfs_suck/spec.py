@@ -82,9 +82,18 @@ def load_spec(path: Path) -> SweepSpec:
     spec = _build(SweepSpec, data, str(path))
     if spec.grid.kind not in ("main", "smoke"):
         raise ValueError(f"grid.kind must be 'main' or 'smoke', got {spec.grid.kind!r}")
-    if spec.mixed_precision not in ("no", "bf16", "fp16", "fp8"):
+    if spec.mixed_precision == "fp8":
         raise ValueError(
-            f"mixed_precision must be no|bf16|fp16|fp8, got {spec.mixed_precision!r}"
+            "fp8 is a silent no-op here, not a speedup. Accelerate's fp8 backends "
+            "(TransformerEngine, torchao) convert by `isinstance(module, nn.Linear)`; "
+            "the featurizers hold raw nn.Parameter weights and call einsum, so nothing "
+            "gets converted. Enabling it means restructuring encode/decode as nn.Linear "
+            "-- and Pi_k ranks blocks by norm, which fp8's 3 mantissa bits would blunt. "
+            "Use bf16."
+        )
+    if spec.mixed_precision not in ("no", "bf16", "fp16"):
+        raise ValueError(
+            f"mixed_precision must be no|bf16|fp16, got {spec.mixed_precision!r}"
         )
     return spec
 

@@ -7,13 +7,16 @@ conditions: [trained, rand_excl_emb, step0_excl_emb, control, step0, rand_incl_e
 out: results/sweep.json
 seed: 0
 device: auto
-mixed_precision: fp8
+mixed_precision: bf16
 cache_dir: cache/tokens
 wandb_project: do-bsfs-suck
 ioi: false
 
 n_tokens: 100000000
-eval_tokens: 200000
+# 3,906 samples per block at the sparsest A=32 (per-block count is
+# eval_tokens*A/16384, so it depends on A alone once G*b is fixed);
+# 200k gave 390, too thin for a b=16 block Gram's stable rank
+eval_tokens: 2000000
 
 grid:
   kind: main
@@ -25,7 +28,9 @@ shuffled:
   active_dims: 64
 
 train:
-  lr: 5.0e-5
+  # sqrt-scaled from 3e-4 at batch_tokens=4096; large batches want a
+  # higher LR, not lower, and 100M/65536 is only 1,525 steps to converge in
+  lr: 1.2e-3
   batch_tokens: 65536
   warmup_frac: 0.02
   # featurizers per stream pass; each carries its own Adam state
