@@ -11,7 +11,6 @@ block geometry, feature absorption
 ```bash
 uv run do-bsfs-suck sweep --model EleutherAI/pythia-160m --device cuda
 uv run do-bsfs-suck figures --results results/sweep.json
-uv run pytest
 ```
 
 Sparsity is parameterized by active dims `A = k*b` with `G*b` fixed, so equal `A`
