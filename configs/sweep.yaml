@@ -25,8 +25,8 @@ shuffled:
   active_dims: 64
 
 train:
-  lr: 3.0e-4
-  batch_tokens: 65536
+  lr: 5.0e-5
+  batch_tokens: 131072
   warmup_frac: 0.02
   # featurizers per stream pass; each carries its own Adam state
   parallel: 1
