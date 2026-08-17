@@ -26,10 +26,10 @@ shuffled:
 
 train:
   lr: 3.0e-4
-  batch_tokens: 4096
+  batch_tokens: 65536
   warmup_frac: 0.02
   # featurizers per stream pass; each carries its own Adam state
-  parallel: 54
+  parallel: 1
   dead_after_tokens: 10000000
   aux_k: 64
   aux_coeff: 0.03125
