@@ -27,7 +27,10 @@ def make_parser() -> argparse.ArgumentParser:
 
     sweep = commands.add_parser("sweep", help="train and evaluate a grid")
     sweep.add_argument("--model", default="EleutherAI/pythia-160m")
-    sweep.add_argument("--dataset", default="monology/pile-uncopyrighted")
+    # None, not the default string, so --smoke can tell "unset" from "asked for
+    # the real corpus" -- the smoke dataset is uncompressed, so without this the
+    # production .zst path is unreachable from any local command
+    sweep.add_argument("--dataset", default=None)
     sweep.add_argument("--layers", type=int, nargs="+", default=[3, 6, 9])
     sweep.add_argument(
         "--conditions", nargs="+", default=list(COMPARISON + NULLS),
@@ -70,7 +73,8 @@ def _sweep(args: argparse.Namespace) -> None:
             grid=smoke_grid,
             shuffled=lambda d, seed=0: shuffled_grid(d, dict_dims=512, block_dims=(4,), active_dims=8, seed=seed),
             n_tokens=200_000, eval_tokens=40_000,
-            dataset=SMOKE_DATASET, out_path=args.out, device=args.device, seed=args.seed,
+            dataset=args.dataset or SMOKE_DATASET,
+            out_path=args.out, device=args.device, seed=args.seed,
             spec=spec, train_cfg=TrainConfig(batch_tokens=1024, lr=args.lr),
         )
         return
@@ -85,7 +89,8 @@ def _sweep(args: argparse.Namespace) -> None:
         model_name=args.model, layers=tuple(args.layers),
         conditions=tuple(args.conditions), grid=grid, shuffled=shuffled, ioi=args.ioi,
         n_tokens=args.tokens,
-        eval_tokens=args.eval_tokens, dataset=args.dataset, out_path=args.out,
+        eval_tokens=args.eval_tokens,
+        dataset=args.dataset or "monology/pile-uncopyrighted", out_path=args.out,
         device=args.device, seed=args.seed, spec=spec,
         train_cfg=TrainConfig(batch_tokens=args.batch_tokens, lr=args.lr),
     )
