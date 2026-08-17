@@ -29,7 +29,7 @@ train:
   batch_tokens: 131072
   warmup_frac: 0.02
   # featurizers per stream pass; each carries its own Adam state
-  parallel: 1
+  parallel: 8
   dead_after_tokens: 10000000
   aux_k: 64
   aux_coeff: 0.03125
