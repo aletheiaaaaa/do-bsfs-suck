@@ -14,7 +14,7 @@ def block_topk(norms: torch.Tensor, k: int) -> torch.Tensor:
 
 def block_soft_threshold(z: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     """sh_theta(z)_g = max(1 - theta_g/||z_g||, 0) z_g, the prox of ||.||_2,1."""
-    norms = z.norm(dim=-1, keepdim=True)
+    norms = z.float().norm(dim=-1, keepdim=True)
     scale = (1.0 - theta.view(1, -1, 1) / norms.clamp_min(1e-8)).clamp_min(0.0)
     return scale * z
 
@@ -62,7 +62,10 @@ class Featurizer(nn.Module, ABC):
 
     @staticmethod
     def block_norms(z: torch.Tensor) -> torch.Tensor:
-        return z.norm(dim=-1)
+        """Always fp32. Under bf16 autocast a b=16 norm carries 8 mantissa bits,
+        and Pi_k ranks blocks by exactly this value -- ties there change which
+        blocks fire, not just by how much."""
+        return z.float().norm(dim=-1)
 
     def frames(self) -> torch.Tensor:
         """(G, b, d), orthonormal rows spanning each block."""
@@ -77,7 +80,8 @@ class Featurizer(nn.Module, ABC):
     def loss(
         self, x: torch.Tensor, x_hat: torch.Tensor, z: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        recon = (x_hat - x).pow(2).sum(-1).mean()
+        # fp32: a 768-term sum of bf16 squares loses most of its low end
+        recon = (x_hat.float() - x.float()).pow(2).sum(-1).mean()
         return {"recon": recon, "loss": recon}
 
     def aux_loss(
@@ -100,7 +104,8 @@ class Featurizer(nn.Module, ABC):
         norms = self.block_norms(pre) * dead
         idx = norms.topk(min(aux_k, n_dead), dim=-1).indices
         keep = torch.zeros_like(norms).scatter_(-1, idx, 1.0)
-        return (self.decode(pre * keep.unsqueeze(-1)) - (x - x_hat)).pow(2).sum(-1).mean()
+        aux = self.decode(pre * keep.unsqueeze(-1)).float()
+        return (aux - (x.float() - x_hat.float())).pow(2).sum(-1).mean()
 
     @torch.no_grad()
     def constrain(self) -> None:

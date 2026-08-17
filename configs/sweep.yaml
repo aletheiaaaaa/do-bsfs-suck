@@ -1,0 +1,42 @@
+model: EleutherAI/pythia-160m
+dataset: monology/pile-uncopyrighted
+layers: [3, 6, 9]
+# omit `conditions` to get the three comparison arms plus the three nulls
+conditions: [trained, rand_excl_emb, step0_excl_emb, control, step0, rand_incl_emb]
+
+out: results/sweep.json
+seed: 0
+device: auto
+mixed_precision: bf16
+cache_dir: cache/tokens
+wandb_project: do-bsfs-suck
+ioi: false
+
+n_tokens: 1000000000
+eval_tokens: 2000000
+
+grid:
+  kind: main
+  dict_dims: 16384
+
+shuffled:
+  enabled: true
+  block_dims: [4, 16]
+  active_dims: 64
+
+train:
+  lr: 3.0e-4
+  batch_tokens: 4096
+  warmup_frac: 0.02
+  # featurizers per stream pass; each carries its own Adam state
+  parallel: 54
+  dead_after_tokens: 10000000
+  aux_k: 64
+  aux_coeff: 0.03125
+  grad_clip: 1.0
+  log_every: 200
+
+randomize:
+  resample_layernorm: false
+  freeze_unembed: true
+  control_per_occurrence: true

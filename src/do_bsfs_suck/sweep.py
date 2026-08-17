@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import torch
+from accelerate import Accelerator
 from transformers import AutoTokenizer
 
 from do_bsfs_suck.config import Condition, FeaturizerConfig, StreamConfig, TrainConfig
@@ -101,12 +102,25 @@ def shuffled_grid(
     return list(dict.fromkeys(out))
 
 
-def _trained_directions(runs, layers) -> dict[int, torch.Tensor]:
-    """The b=1 vanilla decoder per layer, which the shuffled control regroups."""
+def _trained_directions(runs, layers, acc=None) -> dict[int, torch.Tensor]:
+    """The b=1 vanilla decoder per layer, which the shuffled control regroups.
+
+    Runs are sharded across processes, so the b=1 vanilla run for a given layer
+    may live on any rank; every rank needs it to build its own shuffled shard.
+    """
     out = {}
     for run in runs:
         if run.cfg.variant == "vanilla" and run.cfg.block_dim == 1:
-            out.setdefault(run.layer, run.model.W_dec.detach().squeeze(1).clone())
+            out.setdefault(run.layer, run.model.W_dec.detach().squeeze(1).cpu().clone())
+
+    if acc is not None and acc.num_processes > 1:
+        from accelerate.utils import gather_object
+
+        merged: dict[int, torch.Tensor] = {}
+        for part in gather_object([out]):
+            merged.update(part)
+        out = merged
+
     missing = set(layers) - set(out)
     if missing:
         raise ValueError(f"no b=1 vanilla run to seed the shuffled control at {missing}")
@@ -213,13 +227,16 @@ def run_sweep(
     train_cfg: TrainConfig = TrainConfig(),
     cache_dir: Path | None = None,
     wandb_project: str | None = None,
+    mixed_precision: str = "no",
 ) -> list[dict]:
+    acc = Accelerator(mixed_precision=mixed_precision)
+    device = str(acc.device) if device == "auto" else device
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tracker = Tracker(
-        wandb_project, name=f"{model_name.split('/')[-1]}_s{seed}",
+        wandb_project if acc.is_main_process else None, name=f"{model_name.split('/')[-1]}_s{seed}",
         model=model_name, layers=list(layers), conditions=list(conditions),
         n_tokens=n_tokens, eval_tokens=eval_tokens, seed=seed,
-        train=train_cfg, randomize=spec,
+        train=train_cfg, randomize=spec, mixed_precision=mixed_precision,
     )
     rows: list[dict] = []
     if out_path.exists():
@@ -240,12 +257,14 @@ def run_sweep(
             stream.close()
             continue
 
-        runs = cotrain(stream, specs, train_cfg, device=device, tracker=tracker)
+        runs = cotrain(
+            stream, specs, train_cfg, device=device, tracker=tracker, accelerator=acc
+        )
 
         # the shuffled control regroups a *trained* b=1 dictionary, so it needs a
         # second pass once that dictionary exists
         if shuffled is not None:
-            directions = _trained_directions(runs, layers)
+            directions = _trained_directions(runs, layers, acc)
             shuf_cfgs = shuffled(stream.d_model, seed=seed)
             shuf_stream = ActivationStream(
                 dataclasses.replace(scfg, data_seed=seed + 500), spec, device=device
@@ -253,7 +272,7 @@ def run_sweep(
             shuf_stream.scale, shuf_stream.mean = stream.scale, stream.mean
             runs += cotrain(
                 shuf_stream, {L: shuf_cfgs for L in layers}, train_cfg,
-                device=device, directions=directions, tracker=tracker,
+                device=device, directions=directions, tracker=tracker, accelerator=acc,
             )
             shuf_stream.close()
 
@@ -273,12 +292,13 @@ def run_sweep(
             concept = {k: {**v, **extra.get(k, {})} for k, v in concept.items()}
         stream.close()
 
+        fresh: list[dict] = []
         for r in runs:
             # a condition is retrained whole when any of its configs is new, so
             # the finished ones must not be appended twice
             if (condition, r.layer, r.cfg.name) in done:
                 continue
-            rows.append(
+            fresh.append(
                 {
                     "condition": condition, "layer": r.layer, "name": r.cfg.name,
                     "variant": r.cfg.variant, "block_dim": r.cfg.block_dim,
@@ -288,9 +308,19 @@ def run_sweep(
                     **metrics[r.key], **concept[r.key],
                 }
             )
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(rows, indent=2))
+        # each rank trained a different shard; the results file needs all of them
+        if acc.num_processes > 1:
+            from accelerate.utils import gather_object
 
-    tracker.table("results", rows)
+            fresh = [row for part in gather_object([fresh]) for row in part]
+        rows.extend(fresh)
+        done.update((r["condition"], r["layer"], r["name"]) for r in fresh)
+
+        if acc.is_main_process:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(rows, indent=2))
+
+    if acc.is_main_process:
+        tracker.table("results", rows)
     tracker.finish()
     return rows

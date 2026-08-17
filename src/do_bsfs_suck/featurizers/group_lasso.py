@@ -43,7 +43,7 @@ class GroupLassoBSF(Featurizer):
     def loss(
         self, x: torch.Tensor, x_hat: torch.Tensor, z: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        recon = (x_hat - x).pow(2).sum(-1).mean()
+        recon = (x_hat.float() - x.float()).pow(2).sum(-1).mean()
         lasso = self.block_norms(z).sum(-1).mean()
         return {
             "recon": recon,

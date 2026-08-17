@@ -11,6 +11,7 @@ figures/
 results/
 tests/
 pilot_results.json
+smoke.yaml
 
 # Virtual environments
 .venv

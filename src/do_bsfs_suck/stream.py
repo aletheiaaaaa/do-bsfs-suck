@@ -101,7 +101,12 @@ def token_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
 
     path = cache_path(cfg)
     if not path.exists():
-        build_token_cache(cfg, tokenizer, path)
+        # every rank would otherwise race to write the same file
+        from accelerate import PartialState
+
+        with PartialState().main_process_first():
+            if not path.exists():
+                build_token_cache(cfg, tokenizer, path)
 
     ids = np.load(path, mmap_mode="r")
     need = cfg.seq_len * cfg.batch_seqs
