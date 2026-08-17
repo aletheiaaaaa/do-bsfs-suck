@@ -12,8 +12,8 @@ cache_dir: cache/tokens
 wandb_project: do-bsfs-suck
 ioi: false
 
-n_tokens: 1000000000
-eval_tokens: 2000000
+n_tokens: 100000000
+eval_tokens: 200000
 
 grid:
   kind: main
