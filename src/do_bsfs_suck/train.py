@@ -7,6 +7,7 @@ from tqdm import tqdm
 from do_bsfs_suck.config import FeaturizerConfig, TrainConfig
 from do_bsfs_suck.featurizers import Featurizer, build
 from do_bsfs_suck.stream import ActivationStream
+from do_bsfs_suck.tracking import Tracker
 
 
 @dataclass
@@ -40,6 +41,18 @@ def make_runs(
     return runs
 
 
+@torch.no_grad()
+def _metrics(runs: list[Run], lr: float, dead_after: float) -> dict[str, float]:
+    """Per-featurizer training curves. Dead fraction is the one to watch: it is
+    what AuxK exists to hold down, and it climbs with b as k = A/b shrinks."""
+    out: dict[str, float] = {"tokens": runs[0].seen, "lr": lr}
+    for r in runs:
+        dead = (r.model.tokens_since_fired > dead_after).float().mean().item()
+        out[f"{r.key}/fvu"] = r.ema_fvu
+        out[f"{r.key}/dead_frac"] = dead
+    return out
+
+
 def _lr_scale(step: int, total: int, warmup_frac: float) -> float:
     warm = max(int(total * warmup_frac), 1)
     if step < warm:
@@ -53,6 +66,7 @@ def cotrain(
     tcfg: TrainConfig,
     device: str = "cpu",
     directions: dict[int, torch.Tensor] | None = None,
+    tracker: Tracker | None = None,
 ) -> list[Run]:
     """Train every featurizer for every layer, in groups of tcfg.parallel.
 
@@ -65,7 +79,10 @@ def cotrain(
     size = max(tcfg.parallel, 1)
     groups = [runs[i : i + size] for i in range(0, len(runs), size)]
     for n, group in enumerate(groups, 1):
-        _train_group(stream, group, tcfg, device, f"{stream.cfg.condition} {n}/{len(groups)}")
+        _train_group(
+            stream, group, tcfg, device,
+            f"{stream.cfg.condition} {n}/{len(groups)}", tracker or Tracker(),
+        )
     return runs
 
 
@@ -75,6 +92,7 @@ def _train_group(
     tcfg: TrainConfig,
     device: str,
     desc: str,
+    tracker: Tracker,
 ) -> None:
     # one forward captures every layer, so a group spanning layers is free
     layers = sorted({r.layer for r in runs})
@@ -130,10 +148,13 @@ def _train_group(
                     fvu = ((x_hat - x).pow(2).sum() / x.pow(2).sum()).item()
                 run.ema_fvu = fvu if math.isnan(run.ema_fvu) else 0.99 * run.ema_fvu + 0.01 * fvu
 
+            if step % tcfg.log_every == 0:
+                tracker.log(_metrics(runs, tcfg.lr * scale, tcfg.dead_after_tokens))
             step += 1
             bar.update(1)
             if step >= total_steps:
                 bar.close()
+                tracker.log(_metrics(runs, tcfg.lr * scale, tcfg.dead_after_tokens))
                 return
 
         # carry the unconsumed tail forward. A yield is batch_seqs*(seq_len-1)

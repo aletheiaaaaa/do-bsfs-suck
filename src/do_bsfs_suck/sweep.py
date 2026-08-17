@@ -31,6 +31,7 @@ from do_bsfs_suck.evals.splitting import (
 )
 from do_bsfs_suck.randomize import RandomizeSpec
 from do_bsfs_suck.stream import ActivationStream
+from do_bsfs_suck.tracking import Tracker
 from do_bsfs_suck.train import cotrain
 
 # arms where a ground-truth attribute is linearly decodable, so absorption and
@@ -211,8 +212,15 @@ def run_sweep(
     spec: RandomizeSpec = RandomizeSpec(),
     train_cfg: TrainConfig = TrainConfig(),
     cache_dir: Path | None = None,
+    wandb_project: str | None = None,
 ) -> list[dict]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tracker = Tracker(
+        wandb_project, name=f"{model_name.split('/')[-1]}_s{seed}",
+        model=model_name, layers=list(layers), conditions=list(conditions),
+        n_tokens=n_tokens, eval_tokens=eval_tokens, seed=seed,
+        train=train_cfg, randomize=spec,
+    )
     rows: list[dict] = []
     if out_path.exists():
         rows = json.loads(out_path.read_text())
@@ -232,7 +240,7 @@ def run_sweep(
             stream.close()
             continue
 
-        runs = cotrain(stream, specs, train_cfg, device=device)
+        runs = cotrain(stream, specs, train_cfg, device=device, tracker=tracker)
 
         # the shuffled control regroups a *trained* b=1 dictionary, so it needs a
         # second pass once that dictionary exists
@@ -245,7 +253,7 @@ def run_sweep(
             shuf_stream.scale, shuf_stream.mean = stream.scale, stream.mean
             runs += cotrain(
                 shuf_stream, {L: shuf_cfgs for L in layers}, train_cfg,
-                device=device, directions=directions,
+                device=device, directions=directions, tracker=tracker,
             )
             shuf_stream.close()
 
@@ -283,4 +291,6 @@ def run_sweep(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(rows, indent=2))
 
+    tracker.table("results", rows)
+    tracker.finish()
     return rows

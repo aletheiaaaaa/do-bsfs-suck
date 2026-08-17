@@ -49,6 +49,10 @@ def make_parser() -> argparse.ArgumentParser:
         "--cache-dir", type=Path, default=None,
         help="memmap tokenized ids here (~4GB per 1B tokens); omit to re-tokenize every pass",
     )
+    sweep.add_argument(
+        "--wandb-project", default=None,
+        help="log training curves and the results table to this wandb project",
+    )
     sweep.add_argument("--device", default="cpu")
     sweep.add_argument("--seed", type=int, default=0)
     sweep.add_argument("--out", type=Path, default=Path("results/sweep.json"))
@@ -83,7 +87,7 @@ def _sweep(args: argparse.Namespace) -> None:
             n_tokens=200_000, eval_tokens=40_000,
             dataset=args.dataset or SMOKE_DATASET,
             out_path=args.out, device=args.device, seed=args.seed,
-            spec=spec, cache_dir=args.cache_dir,
+            spec=spec, cache_dir=args.cache_dir, wandb_project=args.wandb_project,
             train_cfg=TrainConfig(batch_tokens=1024, lr=args.lr, parallel=args.parallel),
         )
         return
@@ -101,6 +105,7 @@ def _sweep(args: argparse.Namespace) -> None:
         eval_tokens=args.eval_tokens,
         dataset=args.dataset or "monology/pile-uncopyrighted", out_path=args.out,
         device=args.device, seed=args.seed, spec=spec, cache_dir=args.cache_dir,
+        wandb_project=args.wandb_project,
         train_cfg=TrainConfig(
             batch_tokens=args.batch_tokens, lr=args.lr, parallel=args.parallel
         ),
