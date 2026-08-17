@@ -82,9 +82,9 @@ def load_spec(path: Path) -> SweepSpec:
     spec = _build(SweepSpec, data, str(path))
     if spec.grid.kind not in ("main", "smoke"):
         raise ValueError(f"grid.kind must be 'main' or 'smoke', got {spec.grid.kind!r}")
-    if spec.mixed_precision not in ("no", "bf16", "fp16"):
+    if spec.mixed_precision not in ("no", "bf16", "fp16", "fp8"):
         raise ValueError(
-            f"mixed_precision must be no|bf16|fp16, got {spec.mixed_precision!r}"
+            f"mixed_precision must be no|bf16|fp16|fp8, got {spec.mixed_precision!r}"
         )
     return spec
 
