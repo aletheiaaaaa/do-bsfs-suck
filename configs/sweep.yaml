@@ -7,7 +7,7 @@ conditions: [trained, rand_excl_emb, step0_excl_emb, control, step0, rand_incl_e
 out: results/sweep.json
 seed: 0
 device: auto
-mixed_precision: bf16
+mixed_precision: fp8
 cache_dir: cache/tokens
 wandb_project: do-bsfs-suck
 ioi: false
@@ -21,7 +21,7 @@ grid:
 
 shuffled:
   enabled: true
-  block_dims: [4, 16]
+  block_dims: [4, 8, 16]
   active_dims: 64
 
 train:
