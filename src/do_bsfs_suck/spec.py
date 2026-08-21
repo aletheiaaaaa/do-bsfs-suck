@@ -5,14 +5,24 @@ from typing import Any
 
 import yaml
 
-from do_bsfs_suck.config import Condition, TrainConfig
+from do_bsfs_suck.config import (
+    ACTIVE_DIMS,
+    BLOCK_DIMS,
+    BSF_VARIANTS,
+    MATCHED_K,
+    Condition,
+    TrainConfig,
+)
 from do_bsfs_suck.randomize import RandomizeSpec
 
 
 @dataclass(frozen=True)
 class GridSpec:
-    kind: str = "main"  # main | smoke
     dict_dims: int = 16384
+    block_dims: tuple[int, ...] = BLOCK_DIMS
+    active_dims: tuple[int, ...] = ACTIVE_DIMS
+    variants: tuple[str, ...] = BSF_VARIANTS
+    matched_k: int = MATCHED_K
 
 
 @dataclass(frozen=True)
@@ -49,7 +59,7 @@ _NESTED = {
     "train": TrainConfig,
     "randomize": RandomizeSpec,
 }
-_TUPLES = {"layers", "conditions", "block_dims"}
+_TUPLES = {"layers", "conditions", "block_dims", "active_dims", "variants"}
 _PATHS = {"out", "cache_dir"}
 
 
@@ -73,15 +83,11 @@ def _build(cls, data: dict[str, Any], where: str):
 
 
 def load_spec(path: Path) -> SweepSpec:
-    """Parse a sweep config. Unknown keys are an error, not a shrug: a typo'd
-    key that silently keeps the default is the kind of thing you only notice
-    after the cluster time is spent."""
+    """Parse a sweep config. Unknown keys are an error."""
     data = yaml.safe_load(path.read_text()) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path} must be a mapping at the top level")
     spec = _build(SweepSpec, data, str(path))
-    if spec.grid.kind not in ("main", "smoke"):
-        raise ValueError(f"grid.kind must be 'main' or 'smoke', got {spec.grid.kind!r}")
     if spec.mixed_precision == "fp8":
         raise ValueError(
             "fp8 is a silent no-op here, not a speedup. Accelerate's fp8 backends "

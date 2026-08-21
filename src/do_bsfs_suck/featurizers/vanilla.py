@@ -6,10 +6,7 @@ from do_bsfs_suck.featurizers.base import Featurizer, block_topk
 
 
 class VanillaBSF(Featurizer):
-    """z = Pi_k(xW + b). Free encoder and decoder, hard block top-k.
-
-    At b=1 this is a magnitude-TopK SAE; see tests.
-    """
+    """z = Pi_k(xW + b). Free encoder and decoder, hard block top-k."""
 
     def __init__(self, cfg: FeaturizerConfig) -> None:
         super().__init__(cfg)

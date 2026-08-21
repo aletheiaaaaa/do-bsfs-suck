@@ -1,11 +1,17 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-# Sparsity is parameterized by active dims A = k*b, not k, and G*b is held
-# fixed -- so equal A means equal nonzeros and equal decoder params, and b=1 is
-# the SAE baseline at L0 = A.
+# Sparsity is parameterized by active dims A = k*b, not k; G*b is held fixed.
 
 Variant = Literal["vanilla", "grassmann", "group_lasso", "shuffled", "topk_sae"]
+
+BLOCK_DIMS = (1, 2, 4, 8, 16)
+ACTIVE_DIMS = (32, 64, 128)
+BSF_VARIANTS = ("vanilla", "grassmann", "group_lasso")
+# matched-k arm: A = MATCHED_K * b
+MATCHED_K = 32
+# where the two arms cross
+MATCHED_A = 64
 
 Condition = Literal[
     "trained",
@@ -64,15 +70,13 @@ class StreamConfig:
     n_tokens: int = 1_000_000_000
     seq_len: int = 512
     batch_seqs: int = 16
-    # position 0 of a residual stream is an outlier and would dominate recon
+    # position 0 is an outlier and would dominate recon
     drop_first: int = 1
-    # model randomization seed; changing it changes WHICH random model you get
+    # model randomization seed
     seed: int = 0
-    # corpus order only. held-out eval data must vary this, never `seed`, or the
-    # eval runs against a differently-randomized model than training did
+    # corpus order only; held-out eval must vary this, never `seed`
     data_seed: int = 0
-    # where to memmap tokenized ids. None re-streams and re-tokenizes the corpus
-    # on every pass, which is CPU-bound and repeated once per parallel group
+    # where to memmap tokenized ids; None re-tokenizes on every pass
     cache_dir: str | None = None
 
 
@@ -81,8 +85,7 @@ class TrainConfig:
     lr: float = 3e-4
     batch_tokens: int = 4096
     warmup_frac: float = 0.02
-    # featurizers trained per stream pass. Each carries its own Adam state, so
-    # this trades resident memory against how often the corpus is re-run
+    # featurizers per stream pass; each carries its own Adam state
     parallel: int = 8
     dead_after_tokens: int = 10_000_000
     aux_k: int = 64

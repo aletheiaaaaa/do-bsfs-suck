@@ -47,14 +47,13 @@ def make_runs(
 
 
 @torch.no_grad()
-def _metrics(runs: list[Run], lr: float, dead_after: float) -> dict[str, float]:
-    """Per-featurizer training curves. Dead fraction is the one to watch: it is
-    what AuxK exists to hold down, and it climbs with b as k = A/b shrinks."""
+def _metrics(runs: list[Run], lr: float, dead_after: float, prefix: str) -> dict[str, float]:
+    """Per-featurizer training curves, namespaced so conditions do not collide."""
     out: dict[str, float] = {"tokens": runs[0].seen, "lr": lr}
     for r in runs:
         dead = (r.model.tokens_since_fired > dead_after).float().mean().item()
-        out[f"{r.key}/fvu"] = r.ema_fvu
-        out[f"{r.key}/dead_frac"] = dead
+        out[f"{prefix}/{r.key}/fvu"] = r.ema_fvu
+        out[f"{prefix}/{r.key}/dead_frac"] = dead
     return out
 
 
@@ -74,17 +73,9 @@ def cotrain(
     tracker: Tracker | None = None,
     accelerator: Accelerator | None = None,
 ) -> list[Run]:
-    """Train every featurizer for every layer, in groups of tcfg.parallel.
-
-    Each group gets its own pass of the stream, so the model forward is paid
-    once per group rather than once per run. Groups are bounded because every
-    resident run carries its own Adam state: all 162 runs of the main grid at
-    once is ~32GB of optimizer state before a single activation.
-    """
+    """Train every featurizer for every layer, in groups of tcfg.parallel."""
     acc = accelerator or Accelerator()
-    # shard runs across processes rather than data-parallelising each one: the
-    # models are independent and small, so replication would buy nothing. Each
-    # process re-runs the source forward, ~4% of cost, to avoid moving activations.
+    # shard runs across processes; each re-runs the source forward
     mine = plan(specs)[acc.process_index :: acc.num_processes]
     runs = make_runs(mine, tcfg.lr, device or acc.device, directions)
     if not runs:
@@ -109,14 +100,12 @@ def _train_group(
 ) -> None:
     # one forward captures every layer, so a group spanning layers is free
     layers = sorted({r.layer for r in runs})
+    prefix = stream.cfg.condition
     total_steps = max(stream.cfg.n_tokens // tcfg.batch_tokens, 1)
     step = 0
     bar = tqdm(total=total_steps, desc=desc, disable=not acc.is_main_process)
 
-    # a stream yield is batch_seqs*(seq_len-drop_first) tokens, which need not be
-    # a multiple of batch_tokens -- so buffer across yields rather than dropping
-    # the remainder, which would silently train on nothing when the yield is
-    # smaller than one batch
+    # yields need not be a multiple of batch_tokens, so buffer across them
     buf: dict[int, list[torch.Tensor]] = {i: [] for i in layers}
     held = 0
 
@@ -164,20 +153,16 @@ def _train_group(
                     ).item()
                 run.ema_fvu = fvu if math.isnan(run.ema_fvu) else 0.99 * run.ema_fvu + 0.01 * fvu
 
-            if step % tcfg.log_every == 0 and acc.is_main_process:
-                tracker.log(_metrics(runs, tcfg.lr * scale, tcfg.dead_after_tokens))
+            if step % tcfg.log_every == 0:
+                tracker.log(_metrics(runs, tcfg.lr * scale, tcfg.dead_after_tokens, prefix))
             step += 1
             bar.update(1)
             if step >= total_steps:
                 bar.close()
-                if acc.is_main_process:
-                    tracker.log(_metrics(runs, tcfg.lr * scale, tcfg.dead_after_tokens))
+                tracker.log(_metrics(runs, tcfg.lr * scale, tcfg.dead_after_tokens, prefix))
                 return
 
-        # carry the unconsumed tail forward. A yield is batch_seqs*(seq_len-1)
-        # tokens and need not divide batch_tokens: dropping the remainder cost
-        # 50% of the corpus at 8176/4096, and ended the run at half the bar
-        # without erroring.
+        # carry the unconsumed tail forward
         rest = perm[used:]
         buf = {i: [pooled[i][rest]] for i in layers}
         held = int(rest.numel())

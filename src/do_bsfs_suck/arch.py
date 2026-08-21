@@ -1,6 +1,6 @@
 from torch import nn
 
-# checked in order; the fallback below covers anything not listed
+# checked in order; fallback below covers the rest
 BLOCK_PATHS = (
     "gpt_neox.layers",
     "transformer.h",
@@ -42,11 +42,7 @@ def blocks(model: nn.Module) -> nn.ModuleList:
 
 
 def embedding_prefixes(model: nn.Module, include_unembed: bool = True) -> tuple[str, ...]:
-    """Parameter prefixes for the embeddings, for freezing or resampling.
-
-    Tied models (gpt2) share one tensor between input and output, so there is no
-    separate unembedding parameter and only one prefix comes back.
-    """
+    """Parameter prefixes for the embeddings; tied models yield one."""
     inp = model.get_input_embeddings()
     names = [_module_name(model, inp)]
 

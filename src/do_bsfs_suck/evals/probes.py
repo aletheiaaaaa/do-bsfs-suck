@@ -46,7 +46,7 @@ def spelling_tokens(tokenizer, limit: int | None = 4000, seed: int = 0) -> Spell
     return SpellingSet(ids, strs, letters)
 
 
-SUBJECT_POS = 1  # after BOS: position 0 is the attention sink, not token identity
+SUBJECT_POS = 1  # after BOS; position 0 is the attention sink
 
 
 @torch.no_grad()
@@ -60,11 +60,7 @@ def token_activations(
     scale: dict[int, float] | None = None,
     mean: dict[int, torch.Tensor] | None = None,
 ) -> dict[int, torch.Tensor]:
-    """Residual activation at the subject-token position of the spelling prompt.
-
-    ids are assembled by hand so the subject is exactly the labelled vocabulary
-    token, not whatever re-tokenizing its string would produce.
-    """
+    """Residual activation at the subject-token position of the spelling prompt."""
     out: dict[int, list[torch.Tensor]] = {i: [] for i in layers}
     bos = tokenizer.bos_token_id or tokenizer.eos_token_id
     suffix = tokenizer(TEMPLATE.split("{token}")[1])["input_ids"]
@@ -116,7 +112,7 @@ def fit_letter_probes(
         itr, ite = train_test_split(
             index, test_size=0.2, random_state=seed, stratify=y
         )
-        # each letter is ~4% of the set; unbalanced, the probe just predicts 0
+        # each letter is ~4% of the set; unbalanced, the probe predicts 0
         clf = LogisticRegression(max_iter=2000, C=1.0, class_weight="balanced").fit(
             x[itr], y[itr]
         )

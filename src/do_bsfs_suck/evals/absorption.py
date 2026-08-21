@@ -6,10 +6,8 @@ from do_bsfs_suck.evals.probes import LETTERS
 from do_bsfs_suck.featurizers import Featurizer
 
 COS_THRESHOLD = 0.025
-# "at least 1.0 larger than the latent with the second highest ablation effect"
-# -- an additive margin in probe-logit units, not a ratio. Our activations are
-# centered and rescaled to E||x-mu|| = sqrt(d), so this absolute threshold is not
-# on the paper's scale; it is exposed for that reason.
+# an additive margin in probe-logit units, not a ratio -- and our activations
+# are rescaled, so the paper's absolute value does not carry over
 ABLATION_MARGIN = 1.0
 K_MAIN = 3
 
@@ -30,7 +28,7 @@ PREFILTER = 256
 
 @torch.no_grad()
 def block_activations(model: Featurizer, acts: torch.Tensor) -> torch.Tensor:
-    """Chunked: a dense (N, G, b) code is ~840MB at G=16384, b=16."""
+    """Block activations, chunked to bound memory."""
     return torch.cat(
         [model.block_norms(model.encode(c)) for c in acts.split(CHUNK)]
     )
@@ -39,16 +37,7 @@ def block_activations(model: Featurizer, acts: torch.Tensor) -> torch.Tensor:
 def select_main_blocks(
     block_acts: torch.Tensor, y: np.ndarray, k: int, prefilter: int = PREFILTER
 ) -> np.ndarray:
-    """k-sparse probing: the k blocks that positively indicate the concept.
-
-    Ranked by signed coefficient, not |coefficient|: a block firing only on
-    negatives is strong evidence *against* the letter, and counting it as a main
-    latent would inflate the silent-parent count and so the absorption rate.
-
-    L1 on all 16384 blocks is too slow at sweep scale, so candidates are first
-    cut to `prefilter` by mean-activation difference -- which only drops blocks
-    L1 would have zeroed anyway.
-    """
+    """k-sparse probing: the k blocks that positively indicate the concept."""
     x = block_acts.numpy()
     pos, neg = y == 1, y == 0
     if not pos.any() or not neg.any():
@@ -68,11 +57,7 @@ def select_main_blocks(
 
 @torch.no_grad()
 def _contributions(model: Featurizer, acts: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-    """Each block's signed contribution to the probe logit.
-
-    The probe is linear on the residual stream and blocks contribute additively,
-    so w . (z_g D_g) is the exact attribution -- no integrated gradients needed.
-    """
+    """Each block's signed contribution to the probe logit."""
     wd = torch.einsum("gbd,d->gb", model.W_dec, w)
     return torch.cat(
         [
@@ -110,13 +95,11 @@ def absorption_for_letter(
 
     absorptions = 0
     if len(silent):
-        # ablating a block changes the probe logit by -w.(z_g D_g), so the
-        # "largest negative ablation effect" is the largest positive contribution
+        # ablating a block changes the probe logit by -w.(z_g D_g)
         contrib = _contributions(model, acts[silent], w)
         top2 = contrib.topk(2, dim=-1)
         best, runner_up = top2.values[:, 0], top2.values[:, 1]
-        # the cosine test applies to the top block only; the runner-up is the
-        # second highest over all blocks, not over the cos-eligible ones
+        # the runner-up is over all blocks, not the cos-eligible ones
         absorptions = int(
             (
                 (best > 0)
@@ -156,9 +139,7 @@ def absorption(
 
 
 def summarize_absorption(per_letter: dict[str, dict[str, float]]) -> dict[str, float]:
-    """Absorption rate is uninterpretable alone: a b-dim block fires whenever any
-    of b directions fire, so it falls with b mechanically. Always read it next to
-    main_fire_rate and containment."""
+    """Read absorption_rate next to main_fire_rate and containment."""
     if not per_letter:
         return {}
     keys = ("absorption_rate", "main_fire_rate", "containment")

@@ -67,7 +67,7 @@ class MDLStats:
         support = self.support_bits / n
         code = (self.active_scalars / n) * self.code_entropy(delta)
 
-        # residual coded at per-dim distortion delta^2, Gaussian rate, clipped
+        # residual at per-dim distortion delta^2, Gaussian rate, clipped
         sigma_sq = self.resid_sq / (n * max(self.d_in, 1))
         resid = 0.5 * self.d_in * math.log2(max(sigma_sq / delta**2, 1.0))
 
@@ -92,6 +92,5 @@ def _log2_comb(n: int, k: int) -> float:
 def mdl_curve(
     stats: MDLStats, model: Featurizer, deltas: tuple[float, ...], n_samples: int | None = None
 ) -> list[dict[str, float]]:
-    """MDL across distortion levels; the paper's delta is task dependent, so the
-    curve is reported rather than a single point."""
+    """MDL across distortion levels."""
     return [stats.bits(model, d, n_samples) for d in deltas]

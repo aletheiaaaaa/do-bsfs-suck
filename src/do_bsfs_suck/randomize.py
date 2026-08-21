@@ -15,8 +15,7 @@ class RandomizeSpec:
 
     resample_layernorm: bool = False
     freeze_unembed: bool = True
-    # control: fresh noise per token occurrence, not per vocabulary entry --
-    # rand_incl_emb already covers the per-type case
+    # control: fresh noise per token occurrence, not per vocabulary entry
     control_per_occurrence: bool = True
 
 
@@ -59,13 +58,7 @@ STEP0 = ("step0", "step0_excl_emb")
 def splice_trained_embeddings_(
     model: nn.Module, name: str, spec: RandomizeSpec, dtype: torch.dtype
 ) -> None:
-    """Copy trained embeddings onto step-0 weights.
-
-    Pythia's step-0 checkpoint has untrained embeddings, so plain `step0` is a
-    random-embeddings condition and probes for token attributes sit at chance.
-    Splicing restores token identity, giving a real-init analogue of
-    rand_excl_emb.
-    """
+    """Copy trained embeddings onto step-0 weights."""
     trained = AutoModelForCausalLM.from_pretrained(name, revision="main", dtype=dtype)
     src = dict(trained.named_parameters())
     dst = dict(model.named_parameters())
@@ -103,7 +96,7 @@ def control_hook(spec: RandomizeSpec, seed: int):
                 output.shape, generator=gen_state["gen"],
                 device=output.device, dtype=output.dtype,
             )
-        # per vocabulary entry: one fixed random embedding per token id
+        # one fixed random embedding per token id
         ids = args[0]
         table = torch.randn(
             module.weight.shape, generator=gen_state["gen"],

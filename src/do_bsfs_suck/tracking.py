@@ -3,14 +3,16 @@ from typing import Any
 
 
 class Tracker:
-    """wandb wrapper that no-ops when no project is set or wandb is absent.
+    """wandb wrapper that no-ops when no project is set or wandb is absent."""
 
-    Every metric is keyed by featurizer, and `tokens` is the x-axis rather than
-    the step count: parallel groups each restart their step counter, so step
-    would fold unrelated runs onto the same abscissa.
-    """
-
-    def __init__(self, project: str | None = None, name: str | None = None, **config: Any):
+    def __init__(
+        self,
+        project: str | None = None,
+        name: str | None = None,
+        rank: int = 0,
+        world_size: int = 1,
+        **config: Any,
+    ):
         self.run = None
         if not project:
             return
@@ -19,7 +21,13 @@ class Tracker:
         except ImportError:
             return
 
-        self.run = wandb.init(project=project, name=name, config=_flatten(config))
+        # runs are sharded, so each rank needs its own grouped wandb run
+        self.run = wandb.init(
+            project=project,
+            name=name if world_size == 1 else f"{name}_rank{rank}",
+            group=name,
+            config=_flatten({**config, "rank": rank, "world_size": world_size}),
+        )
         wandb.define_metric("tokens")
         wandb.define_metric("*", step_metric="tokens")
 

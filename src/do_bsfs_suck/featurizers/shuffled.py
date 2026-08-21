@@ -6,13 +6,7 @@ from do_bsfs_suck.featurizers.base import Featurizer, block_topk
 
 
 class ShuffledBSF(Featurizer):
-    """Control: blocks grouping random directions of a trained b=1 dictionary.
-
-    A b-dim block fires whenever any of its b directions fire, so firing rate
-    (and anything derived from it, absorption included) drifts with b for
-    reasons unrelated to geometry. This reproduces that drift with no manifold
-    structure. Decoder frozen, encoder trains.
-    """
+    """Control: blocks grouping random directions of a trained b=1 dictionary."""
 
     def __init__(self, cfg: FeaturizerConfig, directions: torch.Tensor) -> None:
         super().__init__(cfg)

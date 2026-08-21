@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 
 from do_bsfs_suck.spec import SweepSpec, dump_spec, load_spec
-from do_bsfs_suck.sweep import COMPARISON, NULLS, main_grid, run_sweep, shuffled_grid, smoke_grid
+from do_bsfs_suck.sweep import COMPARISON, NULLS, main_grid, run_sweep, shuffled_grid
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -31,9 +31,11 @@ def _sweep(spec: SweepSpec) -> None:
     dims = spec.grid.dict_dims
 
     def grid(d_in: int, seed: int = 0):
-        if spec.grid.kind == "smoke":
-            return smoke_grid(d_in, seed=seed)
-        return main_grid(d_in, dict_dims=dims, seed=seed)
+        return main_grid(
+            d_in, dict_dims=dims, block_dims=spec.grid.block_dims,
+            active_dims=spec.grid.active_dims, variants=spec.grid.variants,
+            matched_k=spec.grid.matched_k, seed=seed,
+        )
 
     shuffled = None
     if spec.shuffled.enabled:

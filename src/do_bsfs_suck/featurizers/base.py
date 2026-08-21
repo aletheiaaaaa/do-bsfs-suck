@@ -20,12 +20,7 @@ def block_soft_threshold(z: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
 
 
 class Featurizer(nn.Module, ABC):
-    """x_hat = zD, codes z of shape (N, G, b), decoder D of shape (G, b, d).
-
-    Evals only ever touch block_norms/frames/project, which at b=1 collapse to
-    |z|, the unit decoder direction, and |cos(d_g, v)|*||v|| -- so SAE and BSF
-    are scored by one code path.
-    """
+    """x_hat = zD, codes z of shape (N, G, b), decoder D of shape (G, b, d)."""
 
     def __init__(self, cfg: FeaturizerConfig) -> None:
         super().__init__()
@@ -62,9 +57,7 @@ class Featurizer(nn.Module, ABC):
 
     @staticmethod
     def block_norms(z: torch.Tensor) -> torch.Tensor:
-        """Always fp32. Under bf16 autocast a b=16 norm carries 8 mantissa bits,
-        and Pi_k ranks blocks by exactly this value -- ties there change which
-        blocks fire, not just by how much."""
+        """Block L2 norms, always fp32."""
         return z.float().norm(dim=-1)
 
     def frames(self) -> torch.Tensor:
@@ -80,7 +73,7 @@ class Featurizer(nn.Module, ABC):
     def loss(
         self, x: torch.Tensor, x_hat: torch.Tensor, z: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        # fp32: a 768-term sum of bf16 squares loses most of its low end
+        # fp32: a bf16 sum of squares loses its low end
         recon = (x_hat.float() - x.float()).pow(2).sum(-1).mean()
         return {"recon": recon, "loss": recon}
 
@@ -92,10 +85,7 @@ class Featurizer(nn.Module, ABC):
         dead_after: float,
         aux_k: int,
     ) -> torch.Tensor:
-        """AuxK: let dead blocks reconstruct the residual, reviving them.
-
-        Without it dead fractions reach ~70% at high b, where k = A/b is small.
-        """
+        """AuxK: let dead blocks reconstruct the residual, reviving them."""
         dead = self.tokens_since_fired > dead_after
         n_dead = int(dead.sum())
         if n_dead == 0:
@@ -109,8 +99,7 @@ class Featurizer(nn.Module, ABC):
 
     @torch.no_grad()
     def constrain(self) -> None:
-        """Project blocks onto the unit ball. A clamp, not a renormalization:
-        short blocks are left free to shrink."""
+        """Project blocks onto the unit ball (a clamp, not a renormalization)."""
         norm = self.W_dec.flatten(1).norm(dim=1)
         self.W_dec.div_(norm.clamp_min(1.0).view(-1, 1, 1))
 

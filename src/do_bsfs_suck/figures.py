@@ -7,17 +7,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from do_bsfs_suck.sweep import COMPARISON, MATCHED_A, MATCHED_K  # noqa: E402
+from do_bsfs_suck.config import MATCHED_A, MATCHED_K  # noqa: E402
+from do_bsfs_suck.sweep import COMPARISON  # noqa: E402
 
-# comparison arms take the first three categorical slots (validated all-pairs in
-# both modes); null arms are deliberately recessive gray
+# comparison arms take the first three slots; nulls are recessive gray
 COLORS = {
     "trained": "#2a78d6",
     "rand_excl_emb": "#eb6834",
     "step0_excl_emb": "#1baf7a",
 }
 NULL_COLOR = "#8a8a85"
-# markers carry identity too, so the aqua contrast warning has its relief
+# markers carry identity too
 MARKERS = {"trained": "o", "rand_excl_emb": "s", "step0_excl_emb": "^"}
 NULL_MARKER = "x"
 
@@ -38,8 +38,7 @@ def _style(ax, xlabel: str, ylabel: str, title: str) -> None:
 
 
 def _series(ax, rows, x_key: str, y_key: str) -> None:
-    """One line per condition. Rows sharing an x (different layers, seeds, A) are
-    averaged, with a band showing their spread -- summary.csv is the exact record."""
+    """One line per condition, averaging rows that share an x."""
     for condition in sorted({r["condition"] for r in rows}):
         grouped: dict[float, list[float]] = {}
         for r in rows:
@@ -74,7 +73,7 @@ def stable_rank(rows, out: Path) -> None:
     for ax, variant in zip(axes[0], variants):
         sub = [r for r in rows if r["variant"] == variant]
         bs = sorted({r["block_dim"] for r in sub})
-        # isotropic codes saturate at b; the paper reports trained blocks at 2-4
+        # isotropic codes saturate at b
         ax.plot(bs, bs, color=MUTED, linewidth=1, linestyle=":", label="isotropic (srank = b)")
         ax.axhspan(2, 4, color=GRID, alpha=0.5, zorder=1, label="paper's 2-4 band")
         _series(ax, sub, "block_dim", "srank_codes")
@@ -108,8 +107,7 @@ ABSORPTION_KEYS = [
 
 
 def _held(rows, key: str, pinned: int) -> int | None:
-    """The value of `key` to hold fixed: the sweep's pinned one, or whichever
-    value spans the most block dims (smoke runs never hit the pinned value)."""
+    """The value of `key` to hold fixed."""
     span: dict[int, set] = {}
     for r in rows:
         span.setdefault(r[key], set()).add(r["block_dim"])
@@ -119,9 +117,7 @@ def _held(rows, key: str, pinned: int) -> int | None:
 
 
 def _absorption_panel(rows, path: Path, held: str) -> None:
-    """Rows are metrics, columns variants. Never one axis with two scales, and
-    never one line across variants: absorption rate is meaningless without the
-    firing rate and containment for the *same* dictionary beside it."""
+    """Rows are metrics, columns variants."""
     variants = sorted({r["variant"] for r in rows})
     fig, axes = plt.subplots(
         3, len(variants), figsize=(3.5 * len(variants), 9.4), squeeze=False
@@ -141,9 +137,7 @@ def _absorption_panel(rows, path: Path, held: str) -> None:
 
 
 def absorption(rows, out: Path) -> None:
-    """One panel per matching arm. At matched A, raising b shrinks k = A/b, so
-    fewer blocks fire and main_fire_rate falls for reasons unrelated to
-    absorption; the matched-k panel is the one where b varies alone."""
+    """One panel per matching arm."""
     rows = [r for r in rows if "absorption_rate" in r]
     if not rows:
         return

@@ -15,12 +15,7 @@ def inv_softplus(y: float) -> float:
 
 
 class GroupLassoBSF(Featurizer):
-    """z = sh_theta(xW + b), loss ||x - zD||^2 + lambda ||z||_2,1.
-
-    No k: sparsity is an outcome of lambda and the learned thresholds, so the
-    grid's active-dims axis is measured after the fact and matched over lambda.
-    At b=1 this is a soft-threshold (JumpReLU-like) SAE.
-    """
+    """z = sh_theta(xW + b), loss ||x - zD||^2 + lambda ||z||_2,1."""
 
     def __init__(self, cfg: FeaturizerConfig) -> None:
         super().__init__(cfg)

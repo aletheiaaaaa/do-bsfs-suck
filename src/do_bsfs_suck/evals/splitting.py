@@ -50,11 +50,7 @@ def supervised_directions(
 def split_counts(
     model: Featurizer, directions: dict[str, torch.Tensor], taus: tuple[float, ...] = TAUS
 ) -> dict[str, dict[float, int]]:
-    """How many blocks align with each supervised feature, as a curve over tau.
-
-    Reported as a curve rather than at one threshold: a single tau is easy to
-    pick in whichever direction flatters the method.
-    """
+    """How many blocks align with each supervised feature, as a curve over tau."""
     out: dict[str, dict[float, int]] = {}
     for name, u in directions.items():
         cos = model.project(u) / u.norm().clamp_min(1e-8)

@@ -59,8 +59,7 @@ def cache_path(cfg: StreamConfig) -> Path:
 
 
 def raw_tokens(cfg: StreamConfig) -> int:
-    """Corpus tokens needed to yield cfg.n_tokens usable ones, rounded to whole
-    batches. drop_first is discarded per sequence, so raw > usable."""
+    """Corpus tokens needed to yield cfg.n_tokens usable ones."""
     per_yield = cfg.batch_seqs * (cfg.seq_len - cfg.drop_first)
     n_yields = -(-cfg.n_tokens // per_yield)
     return n_yields * cfg.seq_len * cfg.batch_seqs
@@ -89,8 +88,7 @@ def build_token_cache(cfg: StreamConfig, tokenizer, path: Path) -> None:
     if filled < total:
         tmp.unlink(missing_ok=True)
         raise RuntimeError(f"corpus exhausted at {filled} of {total} tokens")
-    # rename last: a killed build leaves no cache rather than a short one that
-    # would silently truncate every later run
+    # rename last: a killed build leaves no cache, not a short one
     tmp.rename(path)
 
 
@@ -116,11 +114,7 @@ def token_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
 
 
 class ActivationStream:
-    """One model pass feeding every featurizer, with hooks on all layers at once.
-
-    Activations are scaled by a single global constant per layer so that
-    E[||x||] = sqrt(d); relative norms across tokens survive.
-    """
+    """One model pass feeding every featurizer, with hooks on all layers at once."""
 
     def __init__(
         self,
@@ -163,14 +157,7 @@ class ActivationStream:
         return seen
 
     def calibrate(self) -> None:
-        """Per layer: the mean to subtract, then the constant that sets E||x-mu||
-        to sqrt(d).
-
-        Random transformers put nearly all their activation mass in a constant
-        offset -- mean norm ~48x the spread on pythia-14m -- and the featurizer
-        has no decoder bias, so without centering it spends every block on that
-        offset and reconstruction collapses.
-        """
+        """Per layer: the mean to subtract, then the scale that sets E||x-mu|| to sqrt(d)."""
         sums = {i: torch.zeros(self.d_model, device=self.device) for i in self.cfg.layers}
         seen = self._calibration_pass(lambda i, a: sums[i].add_(a.sum(0)))
         self.mean = {i: s / seen for i, s in sums.items()}

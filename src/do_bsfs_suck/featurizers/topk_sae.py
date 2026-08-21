@@ -7,11 +7,7 @@ from do_bsfs_suck.featurizers.base import Featurizer, block_topk
 
 
 class TopKSAE(Featurizer):
-    """Canonical ReLU-TopK SAE. Not a BSF: b is forced to 1.
-
-    Identical to VanillaBSF at b=1 except for the ReLU, so the gap between the
-    two isolates the effect of signed codes.
-    """
+    """Canonical ReLU-TopK SAE. Not a BSF: b is forced to 1."""
 
     def __init__(self, cfg: FeaturizerConfig) -> None:
         if cfg.block_dim != 1:

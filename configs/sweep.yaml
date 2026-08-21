@@ -1,7 +1,6 @@
 model: EleutherAI/pythia-160m
 dataset: monology/pile-uncopyrighted
 layers: [3, 6, 9]
-# omit `conditions` to get the three comparison arms plus the three nulls
 conditions: [trained, rand_excl_emb, step0_excl_emb, control, step0, rand_incl_emb]
 
 out: results/sweep.json
@@ -12,15 +11,15 @@ cache_dir: cache/tokens
 wandb_project: do-bsfs-suck
 ioi: false
 
-n_tokens: 100000000
-# 3,906 samples per block at the sparsest A=32 (per-block count is
-# eval_tokens*A/16384, so it depends on A alone once G*b is fixed);
-# 200k gave 390, too thin for a b=16 block Gram's stable rank
+n_tokens: 1000000000
 eval_tokens: 2000000
 
 grid:
-  kind: main
   dict_dims: 16384
+  block_dims: [1, 2, 4, 8, 16]
+  active_dims: [32, 64, 128]
+  variants: [vanilla, grassmann, group_lasso]
+  matched_k: 32
 
 shuffled:
   enabled: true
@@ -28,13 +27,11 @@ shuffled:
   active_dims: 64
 
 train:
-  # sqrt-scaled from 3e-4 at batch_tokens=4096; large batches want a
-  # higher LR, not lower, and 100M/65536 is only 1,525 steps to converge in
   lr: 1.2e-3
   batch_tokens: 65536
   warmup_frac: 0.02
   # featurizers per stream pass; each carries its own Adam state
-  parallel: 8
+  parallel: 1
   dead_after_tokens: 10000000
   aux_k: 64
   aux_coeff: 0.03125

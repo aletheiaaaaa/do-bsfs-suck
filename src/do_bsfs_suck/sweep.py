@@ -6,7 +6,17 @@ import torch
 from accelerate import Accelerator
 from transformers import AutoTokenizer
 
-from do_bsfs_suck.config import Condition, FeaturizerConfig, StreamConfig, TrainConfig
+from do_bsfs_suck.config import (
+    ACTIVE_DIMS,
+    BLOCK_DIMS,
+    BSF_VARIANTS,
+    MATCHED_A,
+    MATCHED_K,
+    Condition,
+    FeaturizerConfig,
+    StreamConfig,
+    TrainConfig,
+)
 from do_bsfs_suck.evals.absorption import absorption, summarize_absorption
 from do_bsfs_suck.evals.geometry import BlockGram, stable_ranks, summarize_ranks
 from do_bsfs_suck.evals.ioi import (
@@ -35,33 +45,29 @@ from do_bsfs_suck.stream import ActivationStream
 from do_bsfs_suck.tracking import Tracker
 from do_bsfs_suck.train import cotrain
 
-# arms where a ground-truth attribute is linearly decodable, so absorption and
-# splitting mean something; the rest are null calibration only
+# arms where a ground-truth attribute is linearly decodable; the rest are nulls
 COMPARISON: tuple[Condition, ...] = ("trained", "rand_excl_emb", "step0_excl_emb")
 NULLS: tuple[Condition, ...] = ("control", "step0", "rand_incl_emb")
 
 DELTAS = (0.1, 0.2, 0.4, 0.8)
-BLOCK_DIMS = (1, 2, 4, 8, 16)
-ACTIVE_DIMS = (32, 64, 128)
-BSF_VARIANTS = ("vanilla", "grassmann", "group_lasso")
-# the matched-k arm: A = MATCHED_K * b, so every b fires the same number of
-# blocks. Absorption is confounded across b at matched A -- raising b shrinks
-# k = A/b, so fewer blocks fire and a silent parent gets likelier for reasons
-# that have nothing to do with absorption. Only this arm isolates b itself.
-MATCHED_K = 32
-# the A the depth and shuffled grids hold, so the two arms cross there
-MATCHED_A = 64
 
 
-def main_grid(d_in: int, dict_dims: int = 16384, seed: int = 0) -> list[FeaturizerConfig]:
-    """3 BSF variants over b x A, plus the b=1 SAE baseline at each A, plus the
-    matched-k arm. Equal A means equal nonzeros; equal k means equal blocks."""
+def main_grid(
+    d_in: int,
+    dict_dims: int = 16384,
+    block_dims: tuple[int, ...] = BLOCK_DIMS,
+    active_dims: tuple[int, ...] = ACTIVE_DIMS,
+    variants: tuple[str, ...] = BSF_VARIANTS,
+    matched_k: int = MATCHED_K,
+    seed: int = 0,
+) -> list[FeaturizerConfig]:
+    """BSF variants over b x A, plus the b=1 SAE baseline and the matched-k arm."""
     out = []
-    for a in ACTIVE_DIMS:
-        for b in BLOCK_DIMS:
+    for a in active_dims:
+        for b in block_dims:
             if b > a:
                 continue
-            for variant in BSF_VARIANTS:
+            for variant in variants:
                 out.append(
                     FeaturizerConfig(
                         d_in=d_in, variant=variant, dict_dims=dict_dims,
@@ -74,23 +80,22 @@ def main_grid(d_in: int, dict_dims: int = 16384, seed: int = 0) -> list[Featuriz
                 block_dim=1, active_dims=a, seed=seed,
             )
         )
-    for b in BLOCK_DIMS:
-        for variant in BSF_VARIANTS:
+    for b in block_dims:
+        for variant in variants:
             out.append(
                 FeaturizerConfig(
                     d_in=d_in, variant=variant, dict_dims=dict_dims,
-                    block_dim=b, active_dims=MATCHED_K * b, seed=seed,
+                    block_dim=b, active_dims=matched_k * b, seed=seed,
                 )
             )
-    # the two arms share their (b, A) corners; train each config once
+    # the arms share their (b, A) corners; train each config once
     return list(dict.fromkeys(out))
 
 
 def shuffled_grid(
     d_in: int, dict_dims: int = 16384, block_dims=(4, 16), active_dims: int = MATCHED_A, seed: int = 0
 ) -> list[FeaturizerConfig]:
-    """The control needs a point on *both* arms, or it drops out of whichever
-    figure holds the other one fixed."""
+    """The control needs a point on both arms."""
     out = [
         FeaturizerConfig(
             d_in=d_in, variant="shuffled", dict_dims=dict_dims,
@@ -103,11 +108,7 @@ def shuffled_grid(
 
 
 def _trained_directions(runs, layers, acc=None) -> dict[int, torch.Tensor]:
-    """The b=1 vanilla decoder per layer, which the shuffled control regroups.
-
-    Runs are sharded across processes, so the b=1 vanilla run for a given layer
-    may live on any rank; every rank needs it to build its own shuffled shard.
-    """
+    """The b=1 vanilla decoder per layer, which the shuffled control regroups."""
     out = {}
     for run in runs:
         if run.cfg.variant == "vanilla" and run.cfg.block_dim == 1:
@@ -127,17 +128,6 @@ def _trained_directions(runs, layers, acc=None) -> dict[int, torch.Tensor]:
     return out
 
 
-def smoke_grid(d_in: int, seed: int = 0) -> list[FeaturizerConfig]:
-    # (b=1, A=2) and (b=4, A=8) are the matched-k pair, both at k=2
-    return [
-        FeaturizerConfig(d_in=d_in, variant=v, dict_dims=512, block_dim=b, active_dims=a, seed=seed)
-        for v, b, a in [
-            ("topk_sae", 1, 8), ("vanilla", 1, 8), ("vanilla", 1, 2),
-            ("vanilla", 4, 8), ("grassmann", 4, 8),
-        ]
-    ]
-
-
 EVAL_CHUNK = 1024
 
 
@@ -145,8 +135,7 @@ EVAL_CHUNK = 1024
 def _eval_pass(
     runs, stream: ActivationStream, layers: tuple[int, ...], chunk: int = EVAL_CHUNK
 ) -> dict[str, dict]:
-    """Chunked: a whole stream yield through one featurizer is an (N, G, b) code
-    of ~500MB at G*b = 16384, which is enough to OOM a workstation."""
+    """One eval pass, chunked to bound code memory."""
     stats = {r.key: ReconStats() for r in runs}
     grams = {r.key: BlockGram(r.model.n_blocks, r.model.block_dim) for r in runs}
     mdls = {r.key: MDLStats(r.model.n_blocks) for r in runs}
@@ -200,8 +189,7 @@ def _concept_evals(runs, model, tokenizer, layers, scale, mean, seed: int) -> di
 
 
 def _ioi_evals(runs, model, tokenizer, layers, scale, mean, seed: int) -> dict[str, dict]:
-    """Makelov et al.'s IOI oversplitting check, as a cross-model validation of
-    the portable split-counting proxy."""
+    """Makelov et al.'s IOI oversplitting check."""
     data = make_ioi(tokenizer, n=2048, seed=seed)
     acts = ioi_activations(model, tokenizer, data, layers, scale=scale, mean=mean)
     dirs = {L: ioi_directions(acts[L], data) for L in layers}
@@ -233,7 +221,8 @@ def run_sweep(
     device = str(acc.device) if device == "auto" else device
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tracker = Tracker(
-        wandb_project if acc.is_main_process else None, name=f"{model_name.split('/')[-1]}_s{seed}",
+        wandb_project, name=f"{model_name.split('/')[-1]}_s{seed}",
+        rank=acc.process_index, world_size=acc.num_processes,
         model=model_name, layers=list(layers), conditions=list(conditions),
         n_tokens=n_tokens, eval_tokens=eval_tokens, seed=seed,
         train=train_cfg, randomize=spec, mixed_precision=mixed_precision,
@@ -261,8 +250,7 @@ def run_sweep(
             stream, specs, train_cfg, device=device, tracker=tracker, accelerator=acc
         )
 
-        # the shuffled control regroups a *trained* b=1 dictionary, so it needs a
-        # second pass once that dictionary exists
+        # the shuffled control regroups a *trained* b=1 dictionary
         if shuffled is not None:
             directions = _trained_directions(runs, layers, acc)
             shuf_cfgs = shuffled(stream.d_model, seed=seed)
@@ -294,8 +282,7 @@ def run_sweep(
 
         fresh: list[dict] = []
         for r in runs:
-            # a condition is retrained whole when any of its configs is new, so
-            # the finished ones must not be appended twice
+            # a condition retrains whole; don't append finished configs twice
             if (condition, r.layer, r.cfg.name) in done:
                 continue
             fresh.append(
@@ -308,7 +295,7 @@ def run_sweep(
                     **metrics[r.key], **concept[r.key],
                 }
             )
-        # each rank trained a different shard; the results file needs all of them
+        # each rank trained a different shard
         if acc.num_processes > 1:
             from accelerate.utils import gather_object
 

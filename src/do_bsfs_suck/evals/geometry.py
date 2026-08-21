@@ -12,7 +12,7 @@ class BlockGram:
     """
 
     def __init__(self, n_blocks: int, block_dim: int, device: str = "cpu") -> None:
-        # float64: this sums over ~50M tokens, and fp32 drifts visibly
+        # float64: this sums over ~50M tokens
         self.gram = torch.zeros(n_blocks, block_dim, block_dim, device=device, dtype=torch.float64)
         self.fired = torch.zeros(n_blocks, device=device, dtype=torch.float64)
         self.tokens = 0
@@ -33,20 +33,12 @@ def _srank(gram: torch.Tensor) -> torch.Tensor:
 
 @torch.no_grad()
 def stable_ranks(acc: BlockGram, model: Featurizer) -> dict[str, torch.Tensor]:
-    """Both readings of the paper's 'contributions matrix M_g', side by side.
-
-    codes:         M_g = stacked z_ng            (N_g, b)
-    contributions: M_g = stacked z_ng D_g        (N_g, d)
-
-    They coincide exactly when D_g is orthonormal, so they agree for the
-    Grassmannian variant and can differ for the free-decoder ones. The paper
-    does not say which it means, so neither is picked for it.
-    """
+    """Stable ranks under both readings of M_g: codes and contributions."""
     codes = _srank(acc.gram)
 
     d = model.W_dec.detach()
     contrib_gram = torch.einsum("gbc,gcd,ged->gbe", acc.gram, d.double(), d.double())
-    # symmetrize; the product above is only symmetric up to float error
+    # symmetrize: the product above is only symmetric up to float error
     contrib = _srank(0.5 * (contrib_gram + contrib_gram.transpose(-1, -2)))
 
     alive = acc.fired > 0

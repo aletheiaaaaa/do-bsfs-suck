@@ -8,8 +8,7 @@ from do_bsfs_suck.featurizers import Featurizer
 
 TEMPLATE = "When {a} and {b} went to the store, {s} gave a book to"
 
-# Makelov et al. use single-token names; the pool is filtered against the
-# tokenizer at build time, and against substrings so `.count()` stays exact.
+# single-token names, filtered against the tokenizer and against substrings
 NAMES = (
     "John Mary Tom James Dan Paul Alice Bob Carl Emma Jack Kate Luke Nick "
     "Rose Sam Will Anna Chris David Eric Frank Grace Henry Julia Kevin Laura "
@@ -30,8 +29,7 @@ class IOIData:
 
 
 def usable_names(tokenizer) -> list[str]:
-    """Names that are one token with a leading space and not substrings of each
-    other, so prompt.count(name) counts occurrences rather than fragments."""
+    """Single-token, space-prefixed names that are not substrings of each other."""
     single = [
         n for n in NAMES
         if len(tokenizer(" " + n)["input_ids"]) == 1
@@ -45,14 +43,7 @@ def usable_names(tokenizer) -> list[str]:
 def make_ioi(
     tokenizer, n: int = 512, seed: int = 0, n_names: int = 12
 ) -> IOIData:
-    """IOI prompts parameterized by S (repeated), IO (not repeated), and Pos.
-
-    Pos is ABB when the IO name appears first and BAB when it appears second.
-
-    The name pool is capped so each name recurs often enough for a per-name
-    mean-difference direction; with all 36 names every S= bucket falls under
-    min_count and only Pos survives.
-    """
+    """IOI prompts parameterized by S (repeated), IO (not repeated), and Pos."""
     names = usable_names(tokenizer)[:n_names]
     if len(names) < 2:
         raise ValueError("need at least two single-token names")
@@ -134,11 +125,7 @@ def pos_split_counts(
 
 
 def summarize_ioi(counts: dict[str, dict[float, int]]) -> dict[str, float]:
-    """Per attribute: mean blocks per supervised feature.
-
-    Makelov et al. report Pos -- a binary attribute -- splitting into >=10 SAE
-    features, so ioi_Pos_splits is the number the reproduction turns on.
-    """
+    """Per attribute: mean blocks per supervised feature."""
     out: dict[str, float] = {}
     for attr in ("S", "IO", "Pos"):
         rows = [c for k, c in counts.items() if k.startswith(f"{attr}=")]
