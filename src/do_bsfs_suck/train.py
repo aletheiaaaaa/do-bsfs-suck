@@ -73,24 +73,18 @@ def cotrain(
     tracker: Tracker | None = None,
     accelerator: Accelerator | None = None,
 ) -> list[Run]:
-    """Train every featurizer for every layer, in groups of tcfg.parallel."""
+    """Train every featurizer for every layer, in a single stream pass."""
     acc = accelerator or Accelerator()
     # shard runs across processes; each re-runs the source forward
     mine = plan(specs)[acc.process_index :: acc.num_processes]
     runs = make_runs(mine, tcfg.lr, device or acc.device, directions)
     if not runs:
         return runs
-    size = max(tcfg.parallel, 1)
-    groups = [runs[i : i + size] for i in range(0, len(runs), size)]
-    for n, group in enumerate(groups, 1):
-        _train_group(
-            stream, group, tcfg, acc,
-            f"{stream.cfg.condition} {n}/{len(groups)}", tracker or Tracker(),
-        )
+    _train(stream, runs, tcfg, acc, stream.cfg.condition, tracker or Tracker())
     return runs
 
 
-def _train_group(
+def _train(
     stream: ActivationStream,
     runs: list[Run],
     tcfg: TrainConfig,
@@ -98,7 +92,7 @@ def _train_group(
     desc: str,
     tracker: Tracker,
 ) -> None:
-    # one forward captures every layer, so a group spanning layers is free
+    # one forward captures every layer, so runs spanning layers are free
     layers = sorted({r.layer for r in runs})
     prefix = stream.cfg.condition
     total_steps = max(stream.cfg.n_tokens // tcfg.batch_tokens, 1)

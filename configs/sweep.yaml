@@ -11,7 +11,7 @@ cache_dir: cache/tokens
 wandb_project: do-bsfs-suck
 ioi: false
 
-n_tokens: 1000000000
+n_tokens: 100000000
 eval_tokens: 2000000
 
 grid:
@@ -28,10 +28,8 @@ shuffled:
 
 train:
   lr: 1.2e-3
-  batch_tokens: 65536
+  batch_tokens: 16384
   warmup_frac: 0.02
-  # featurizers per stream pass; each carries its own Adam state
-  parallel: 1
   dead_after_tokens: 10000000
   aux_k: 64
   aux_coeff: 0.03125

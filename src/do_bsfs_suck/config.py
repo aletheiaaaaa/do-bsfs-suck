@@ -83,8 +83,6 @@ class TrainConfig:
     lr: float = 3e-4
     batch_tokens: int = 4096
     warmup_frac: float = 0.02
-    # featurizers per stream pass; each carries its own Adam state
-    parallel: int = 8
     dead_after_tokens: int = 10_000_000
     aux_k: int = 64
     aux_coeff: float = 1.0 / 32.0
