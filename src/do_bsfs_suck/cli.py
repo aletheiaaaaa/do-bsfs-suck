@@ -53,7 +53,8 @@ def _sweep(spec: SweepSpec) -> None:
         n_tokens=spec.n_tokens, eval_tokens=spec.eval_tokens,
         dataset=spec.dataset, out_path=spec.out, device=spec.device,
         seed=spec.seed, spec=spec.randomize, train_cfg=spec.train,
-        cache_dir=spec.cache_dir, wandb_project=spec.wandb_project,
+        bank_dir=spec.bank_dir,
+        wandb_project=spec.wandb_project,
         mixed_precision=spec.mixed_precision,
     )
 

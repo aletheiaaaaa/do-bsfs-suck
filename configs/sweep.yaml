@@ -7,7 +7,7 @@ out: results/sweep.json
 seed: 0
 device: auto
 mixed_precision: bf16
-cache_dir: cache/tokens
+bank_dir: cache/acts
 wandb_project: do-bsfs-suck
 ioi: false
 

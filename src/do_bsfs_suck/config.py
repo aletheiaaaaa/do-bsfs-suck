@@ -74,8 +74,8 @@ class StreamConfig:
     seed: int = 0
     # corpus order only; held-out eval must vary this, never `seed`
     data_seed: int = 0
-    # where to memmap tokenized ids; None re-tokenizes on every pass
-    cache_dir: str | None = None
+    # where to memmap normalized activations; required, and replayed every pass
+    bank_dir: str | None = None
 
 
 @dataclass(frozen=True)
