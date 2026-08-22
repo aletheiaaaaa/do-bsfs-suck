@@ -46,8 +46,8 @@ from do_bsfs_suck.tracking import Tracker
 from do_bsfs_suck.train import cotrain
 
 # arms where a ground-truth attribute is linearly decodable; the rest are nulls
-COMPARISON: tuple[Condition, ...] = ("trained", "rand_excl_emb", "step0_excl_emb")
-NULLS: tuple[Condition, ...] = ("control", "step0", "rand_incl_emb")
+COMPARISON: tuple[Condition, ...] = ("trained", "rand_excl_emb")
+NULLS: tuple[Condition, ...] = ("control", "rand_incl_emb")
 
 DELTAS = (0.1, 0.2, 0.4, 0.8)
 

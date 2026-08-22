@@ -51,24 +51,6 @@ def resample_(model: nn.Module, condition: Condition, spec: RandomizeSpec, seed:
     return touched
 
 
-STEP0 = ("step0", "step0_excl_emb")
-
-
-@torch.no_grad()
-def splice_trained_embeddings_(
-    model: nn.Module, name: str, spec: RandomizeSpec, dtype: torch.dtype
-) -> None:
-    """Copy trained embeddings onto step-0 weights."""
-    trained = AutoModelForCausalLM.from_pretrained(name, revision="main", dtype=dtype)
-    src = dict(trained.named_parameters())
-    dst = dict(model.named_parameters())
-    for prefix in embedding_prefixes(model, spec.freeze_unembed):
-        key = f"{prefix}.weight"
-        if key in src and key in dst:
-            dst[key].copy_(src[key])
-    del trained
-
-
 def load_model(
     name: str,
     condition: Condition = "trained",
@@ -76,10 +58,7 @@ def load_model(
     seed: int = 0,
     dtype: torch.dtype = torch.float32,
 ) -> nn.Module:
-    revision = "step0" if condition in STEP0 else "main"
-    model = AutoModelForCausalLM.from_pretrained(name, revision=revision, dtype=dtype)
-    if condition == "step0_excl_emb":
-        splice_trained_embeddings_(model, name, spec, dtype)
+    model = AutoModelForCausalLM.from_pretrained(name, dtype=dtype)
     resample_(model, condition, spec, seed)
     return model.eval()
 

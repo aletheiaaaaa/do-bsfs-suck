@@ -17,8 +17,6 @@ Condition = Literal[
     "trained",
     "rand_excl_emb",
     "rand_incl_emb",
-    "step0",
-    "step0_excl_emb",
     "control",
 ]
 

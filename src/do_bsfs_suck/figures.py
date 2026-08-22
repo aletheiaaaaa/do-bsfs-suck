@@ -10,15 +10,14 @@ import matplotlib.pyplot as plt  # noqa: E402
 from do_bsfs_suck.config import MATCHED_A, MATCHED_K  # noqa: E402
 from do_bsfs_suck.sweep import COMPARISON  # noqa: E402
 
-# comparison arms take the first three slots; nulls are recessive gray
+# comparison arms take the named slots; nulls are recessive gray
 COLORS = {
     "trained": "#2a78d6",
     "rand_excl_emb": "#eb6834",
-    "step0_excl_emb": "#1baf7a",
 }
 NULL_COLOR = "#8a8a85"
 # markers carry identity too
-MARKERS = {"trained": "o", "rand_excl_emb": "s", "step0_excl_emb": "^"}
+MARKERS = {"trained": "o", "rand_excl_emb": "s"}
 NULL_MARKER = "x"
 
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#dcdcd8"

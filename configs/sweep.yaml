@@ -1,7 +1,7 @@
 model: EleutherAI/pythia-160m
 dataset: monology/pile-uncopyrighted
 layers: [3, 6, 9]
-conditions: [trained, rand_excl_emb, step0_excl_emb, control, step0, rand_incl_emb]
+conditions: [trained, rand_excl_emb, control, rand_incl_emb]
 
 out: results/sweep.json
 seed: 0
