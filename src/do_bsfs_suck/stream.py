@@ -38,7 +38,7 @@ def _capture(model: nn.Module, layers: tuple[int, ...]):
             h.remove()
 
 
-def corpus_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
+def _corpus_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
     """(batch_seqs, seq_len) int64, packed end to end from the corpus."""
     ds = load_dataset(cfg.dataset, split="train", streaming=True)
     ds = ds.shuffle(seed=cfg.data_seed, buffer_size=10_000)
@@ -53,22 +53,64 @@ def corpus_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
             yield torch.tensor(chunk, dtype=torch.long).view(cfg.batch_seqs, cfg.seq_len)
 
 
-def bank_paths(cfg: StreamConfig) -> dict[int, Path]:
-    """One memmap per layer, keyed by everything that changes the activations."""
-    slug = f"{cfg.model}__{cfg.dataset}__{cfg.condition}".replace("/", "--")
-    stem = f"{slug}_s{cfg.seed}_d{cfg.data_seed}_n{cfg.n_tokens}_L{cfg.seq_len}"
-    return {i: Path(cfg.bank_dir) / f"{stem}_l{i}.npy" for i in cfg.layers}
+def cache_path(cfg: StreamConfig) -> Path:
+    slug = f"{cfg.model}__{cfg.dataset}".replace("/", "--")
+    return Path(cfg.cache_dir) / f"{slug}_s{cfg.data_seed}_L{cfg.seq_len}_n{cfg.n_tokens}.npy"
 
 
-def bank_rows(cfg: StreamConfig) -> int:
-    """Rows the bank holds; a whole number of yields, so a replay lines up."""
+def raw_tokens(cfg: StreamConfig) -> int:
+    """Corpus tokens needed to yield cfg.n_tokens usable ones."""
     per_yield = cfg.batch_seqs * (cfg.seq_len - cfg.drop_first)
-    return -(-cfg.n_tokens // per_yield) * per_yield
+    n_yields = -(-cfg.n_tokens // per_yield)
+    return n_yields * cfg.seq_len * cfg.batch_seqs
 
 
-def bank_bytes(cfg: StreamConfig, d_model: int) -> int:
-    """fp16, so two bytes per dimension per token per layer."""
-    return bank_rows(cfg) * d_model * len(cfg.layers) * 2
+def build_token_cache(cfg: StreamConfig, tokenizer, path: Path) -> None:
+    total = raw_tokens(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".building.npy")
+    arr = np.lib.format.open_memmap(tmp, mode="w+", dtype=np.int32, shape=(total,))
+
+    filled = 0
+    bar = tqdm(total=total, desc=f"tokenizing {path.name}", unit="tok", unit_scale=True)
+    for ids in _corpus_batches(cfg, tokenizer):
+        flat = ids.reshape(-1).numpy()
+        take = min(len(flat), total - filled)
+        arr[filled : filled + take] = flat[:take]
+        filled += take
+        bar.update(take)
+        if filled >= total:
+            break
+    bar.close()
+    arr.flush()
+    del arr
+
+    if filled < total:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"corpus exhausted at {filled} of {total} tokens")
+    # rename last: a killed build leaves no cache, not a short one
+    tmp.rename(path)
+
+
+def token_batches(cfg: StreamConfig, tokenizer) -> Iterator[torch.Tensor]:
+    if cfg.cache_dir is None:
+        yield from _corpus_batches(cfg, tokenizer)
+        return
+
+    path = cache_path(cfg)
+    if not path.exists():
+        # every rank would otherwise race to write the same file
+        from accelerate import PartialState
+
+        with PartialState().main_process_first():
+            if not path.exists():
+                build_token_cache(cfg, tokenizer, path)
+
+    ids = np.load(path, mmap_mode="r")
+    need = cfg.seq_len * cfg.batch_seqs
+    for start in range(0, len(ids) - need + 1, need):
+        chunk = np.asarray(ids[start : start + need], dtype=np.int64)
+        yield torch.from_numpy(chunk).view(cfg.batch_seqs, cfg.seq_len)
 
 
 class ActivationStream:
@@ -81,11 +123,6 @@ class ActivationStream:
         device: str = "cpu",
         dtype: torch.dtype = torch.float32,
     ) -> None:
-        if cfg.bank_dir is None:
-            raise ValueError(
-                "bank_dir is required: activations are banked to disk once and "
-                "replayed, rather than re-running the model for every pass"
-            )
         self.cfg = cfg
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(cfg.model)
@@ -110,7 +147,7 @@ class ActivationStream:
 
     def _calibration_pass(self, fn) -> int:
         seen = 0
-        for ids in corpus_batches(self.cfg, self.tokenizer):
+        for ids in token_batches(self.cfg, self.tokenizer):
             acts = self._forward(ids)
             for i, a in acts.items():
                 fn(i, a)
@@ -138,80 +175,16 @@ class ActivationStream:
     def normalize(self, acts: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         return {i: (a - self.mean[i]) * self.scale[i] for i, a in acts.items()}
 
-    def _model_batches(self) -> Iterator[dict[int, torch.Tensor]]:
+    def __iter__(self) -> Iterator[dict[int, torch.Tensor]]:
+        if not self.scale:
+            self.calibrate()
         seen = 0
-        for ids in corpus_batches(self.cfg, self.tokenizer):
+        for ids in token_batches(self.cfg, self.tokenizer):
             out = self.normalize(self._forward(ids))
             seen += next(iter(out.values())).shape[0]
             yield out
             if seen >= self.cfg.n_tokens:
                 return
-
-    def build_bank(self, paths: dict[int, Path]) -> None:
-        """Write normalized activations once; every later pass reads them back."""
-        rows = bank_rows(self.cfg)
-        tmp = {i: p.with_suffix(".building.npy") for i, p in paths.items()}
-        for p in paths.values():
-            p.parent.mkdir(parents=True, exist_ok=True)
-        arr = {
-            i: np.lib.format.open_memmap(
-                t, mode="w+", dtype=np.float16, shape=(rows, self.d_model)
-            )
-            for i, t in tmp.items()
-        }
-
-        filled = 0
-        gb = bank_bytes(self.cfg, self.d_model) / 1e9
-        bar = tqdm(
-            total=rows, desc=f"banking {self.cfg.condition} ({gb:.0f}GB)",
-            unit="tok", unit_scale=True,
-        )
-        for out in self._model_batches():
-            take = min(next(iter(out.values())).shape[0], rows - filled)
-            for i, a in out.items():
-                arr[i][filled : filled + take] = a[:take].cpu().numpy().astype(np.float16)
-            filled += take
-            bar.update(take)
-            if filled >= rows:
-                break
-        bar.close()
-        for a in arr.values():
-            a.flush()
-        arr.clear()
-
-        if filled < rows:
-            for t in tmp.values():
-                t.unlink(missing_ok=True)
-            raise RuntimeError(f"stream ran dry at {filled} of {rows} rows")
-        # rename last: a killed build leaves no bank, not a short one
-        for i, t in tmp.items():
-            t.rename(paths[i])
-
-    def _bank_batches(self, paths: dict[int, Path]) -> Iterator[dict[int, torch.Tensor]]:
-        mm = {i: np.load(p, mmap_mode="r") for i, p in paths.items()}
-        per_yield = self.cfg.batch_seqs * (self.cfg.seq_len - self.cfg.drop_first)
-        for start in range(0, bank_rows(self.cfg), per_yield):
-            # np.array copies: a memmap slice is read-only, and torch would
-            # hand back a tensor that lies about being writable
-            yield {
-                i: torch.from_numpy(np.array(m[start : start + per_yield]))
-                .float()
-                .to(self.device)
-                for i, m in mm.items()
-            }
-
-    def __iter__(self) -> Iterator[dict[int, torch.Tensor]]:
-        if not self.scale:
-            self.calibrate()
-        paths = bank_paths(self.cfg)
-        if not all(p.exists() for p in paths.values()):
-            # every rank would otherwise race to write the same files
-            from accelerate import PartialState
-
-            with PartialState().main_process_first():
-                if not all(p.exists() for p in paths.values()):
-                    self.build_bank(paths)
-        yield from self._bank_batches(paths)
 
     def close(self) -> None:
         if self._control is not None:

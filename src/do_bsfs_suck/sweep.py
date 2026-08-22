@@ -286,7 +286,7 @@ def run_sweep(
     seed: int = 0,
     spec: RandomizeSpec = RandomizeSpec(),
     train_cfg: TrainConfig = TrainConfig(),
-    bank_dir: Path | None = None,
+    cache_dir: Path | None = None,
     wandb_project: str | None = None,
     mixed_precision: str = "no",
 ) -> list[dict]:
@@ -309,7 +309,7 @@ def run_sweep(
         scfg = StreamConfig(
             model=model_name, condition=condition, layers=layers,
             dataset=dataset, n_tokens=n_tokens, seed=seed, data_seed=seed,
-            bank_dir=str(bank_dir) if bank_dir else None,
+            cache_dir=str(cache_dir) if cache_dir else None,
         )
         stream = ActivationStream(scfg, spec, device=device)
         cfgs = grid(stream.d_model, seed=seed)

@@ -42,8 +42,7 @@ class SweepSpec:
     seed: int = 0
     device: str = "auto"
     mixed_precision: str = "bf16"
-    # where to memmap normalized activations; required, and replayed every pass
-    bank_dir: Path | None = None
+    cache_dir: Path | None = None
     wandb_project: str | None = None
     ioi: bool = False
     n_tokens: int = 1_000_000_000
@@ -61,7 +60,7 @@ _NESTED = {
     "randomize": RandomizeSpec,
 }
 _TUPLES = {"layers", "conditions", "block_dims", "active_dims", "variants"}
-_PATHS = {"out", "bank_dir"}
+_PATHS = {"out", "cache_dir"}
 
 
 def _build(cls, data: dict[str, Any], where: str):
@@ -101,12 +100,6 @@ def load_spec(path: Path) -> SweepSpec:
     if spec.mixed_precision not in ("no", "bf16", "fp16"):
         raise ValueError(
             f"mixed_precision must be no|bf16|fp16, got {spec.mixed_precision!r}"
-        )
-    if spec.bank_dir is None:
-        raise ValueError(
-            "bank_dir is required: activations are banked to disk once and "
-            "replayed. Budget n_tokens * d_model * len(layers) * 2 bytes per "
-            "condition, and the same again for the shuffled arm."
         )
     return spec
 
