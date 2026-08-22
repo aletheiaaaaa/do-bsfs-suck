@@ -53,6 +53,7 @@ def split_counts(
     """How many blocks align with each supervised feature, as a curve over tau."""
     out: dict[str, dict[float, int]] = {}
     for name, u in directions.items():
+        u = u.to(model.W_dec.device)
         cos = model.project(u) / u.norm().clamp_min(1e-8)
         out[name] = {t: int((cos > t).sum()) for t in taus}
     return out

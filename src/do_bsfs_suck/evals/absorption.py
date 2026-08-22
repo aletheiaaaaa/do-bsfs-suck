@@ -29,6 +29,7 @@ PREFILTER = 256
 @torch.no_grad()
 def block_activations(model: Featurizer, acts: torch.Tensor) -> torch.Tensor:
     """Block activations, chunked to bound memory."""
+    acts = acts.to(model.W_dec.device)
     return torch.cat(
         [model.block_norms(model.encode(c)) for c in acts.split(CHUNK)]
     )
@@ -58,11 +59,12 @@ def select_main_blocks(
 @torch.no_grad()
 def _contributions(model: Featurizer, acts: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     """Each block's signed contribution to the probe logit."""
-    wd = torch.einsum("gbd,d->gb", model.W_dec, w)
+    dev = model.W_dec.device
+    wd = torch.einsum("gbd,d->gb", model.W_dec, w.to(dev))
     return torch.cat(
         [
             torch.einsum("ngb,gb->ng", model.encode(c), wd)
-            for c in acts.split(CHUNK)
+            for c in acts.to(dev).split(CHUNK)
         ]
     )
 
@@ -78,8 +80,11 @@ def absorption_for_letter(
     cos_threshold: float = COS_THRESHOLD,
     ablation_margin: float = ABLATION_MARGIN,
 ) -> dict[str, float]:
+    dev = model.W_dec.device
+    acts, w = acts.to(dev), w.to(dev)
     k_main = main_budget(model) if k_main is None else k_main
-    block_acts = block_activations(model, acts)
+    # numpy indexing and sklearn both need this side of the device boundary
+    block_acts = block_activations(model, acts).cpu()
     main = select_main_blocks(block_acts, y, k_main)
 
     true_pos = np.flatnonzero((y == 1) & (predicted == 1))
@@ -90,13 +95,15 @@ def absorption_for_letter(
     silent = true_pos[~main_fires[true_pos]]
 
     # how much of the probe direction the main blocks already span
-    cos = model.project(w) / w.norm().clamp_min(1e-8)
+    cos = (model.project(w) / w.norm().clamp_min(1e-8)).cpu()
     containment = float(cos[main].max())
 
     absorptions = 0
     if len(silent):
         # ablating a block changes the probe logit by -w.(z_g D_g)
-        contrib = _contributions(model, acts[silent], w)
+        contrib = _contributions(
+            model, acts[torch.as_tensor(silent, device=dev)], w
+        ).cpu()
         top2 = contrib.topk(2, dim=-1)
         best, runner_up = top2.values[:, 0], top2.values[:, 1]
         # the runner-up is over all blocks, not the cos-eligible ones

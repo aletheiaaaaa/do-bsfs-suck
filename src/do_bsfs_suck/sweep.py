@@ -164,11 +164,7 @@ def _eval_pass(
 
 @dataclass(frozen=True)
 class ConceptContext:
-    """Per layer, everything absorption and splitting need that is not a run.
-
-    Fitting the probes costs a forward pass over the vocabulary, so it is done
-    once per condition rather than once per group of featurizers.
-    """
+    """Per layer, what absorption and splitting need that is not a run."""
 
     acts: dict[int, torch.Tensor]  # spelling activations, test split only
     letters: dict[int, list[str]]  # their labels, in the same order
@@ -176,13 +172,20 @@ class ConceptContext:
     directions: dict[int, torch.Tensor]
 
 
-def _concept_context(model, tokenizer, layers, scale, mean, seed: int) -> ConceptContext:
+def _concept_context(
+    model, tokenizer, layers, scale, mean, seed: int, device: str = "cpu"
+) -> ConceptContext:
+    # the source model is wherever the sweep put it; the ids must follow it
     spell = spelling_tokens(tokenizer, limit=4000, seed=seed)
-    spell_acts = token_activations(model, tokenizer, spell, layers, scale=scale, mean=mean)
+    spell_acts = token_activations(
+        model, tokenizer, spell, layers, device=device, scale=scale, mean=mean
+    )
 
     ids, strings = vocab_sample(tokenizer, n=8000, seed=seed)
     vocab_set = SpellingSet(ids, strings, ["?"] * len(ids))
-    vocab_acts = token_activations(model, tokenizer, vocab_set, layers, scale=scale, mean=mean)
+    vocab_acts = token_activations(
+        model, tokenizer, vocab_set, layers, device=device, scale=scale, mean=mean
+    )
 
     acts, letters, probes = {}, {}, {}
     for L in layers:
@@ -211,9 +214,13 @@ def _concept_evals(runs, ctx: ConceptContext) -> dict[str, dict]:
     return out
 
 
-def _ioi_context(model, tokenizer, layers, scale, mean, seed: int) -> dict[int, torch.Tensor]:
+def _ioi_context(
+    model, tokenizer, layers, scale, mean, seed: int, device: str = "cpu"
+) -> dict[int, torch.Tensor]:
     data = make_ioi(tokenizer, n=2048, seed=seed)
-    acts = ioi_activations(model, tokenizer, data, layers, scale=scale, mean=mean)
+    acts = ioi_activations(
+        model, tokenizer, data, layers, device=device, scale=scale, mean=mean
+    )
     return {L: ioi_directions(acts[L], data) for L in layers}
 
 
@@ -226,11 +233,7 @@ def _ioi_evals(runs, dirs: dict[int, torch.Tensor]) -> dict[str, dict]:
 
 @dataclass
 class Scoring:
-    """Everything a group is scored against, fixed once per condition.
-
-    Groups are evaluated as they finish training so their models can be freed,
-    which means every metric has to be reducible to rows here and now.
-    """
+    """Per-condition state a group is scored against."""
 
     condition: Condition
     model_name: str
@@ -324,10 +327,12 @@ def run_sweep(
         )
         eval_stream.scale, eval_stream.mean = stream.scale, stream.mean
         concept_ctx = _concept_context(
-            stream.model, tokenizer, layers, stream.scale, stream.mean, seed
+            stream.model, tokenizer, layers, stream.scale, stream.mean, seed, device
         )
         ioi_ctx = (
-            _ioi_context(stream.model, tokenizer, layers, stream.scale, stream.mean, seed)
+            _ioi_context(
+                stream.model, tokenizer, layers, stream.scale, stream.mean, seed, device
+            )
             if ioi
             else None
         )

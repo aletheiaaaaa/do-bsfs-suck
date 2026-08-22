@@ -28,12 +28,7 @@ class Run:
         return f"L{self.layer}/{self.cfg.name}"
 
     def release_optimizer(self) -> None:
-        """Drop Adam's moments once this run is trained.
-
-        Nothing downstream reads them, and they are two extra copies of every
-        weight -- held to the end of the sweep they cost more than the models.
-        Only safe because groups partition the runs: each is trained once.
-        """
+        """Drop Adam's moments; nothing downstream reads them."""
         self.opt.state.clear()
 
 
@@ -83,12 +78,7 @@ def cotrain(
     tracker: Tracker | None = None,
     accelerator: Accelerator | None = None,
 ) -> list[Run]:
-    """Train every featurizer for every layer, keeping all of them.
-
-    Convenience over `train_groups` for callers small enough to hold the whole
-    grid; `run_sweep` consumes the groups instead, so nothing but the group in
-    hand stays resident.
-    """
+    """Train every featurizer for every layer, keeping all of them."""
     return [
         run
         for group in train_groups(
@@ -109,9 +99,7 @@ def train_groups(
 ) -> Iterator[list[Run]]:
     """Train the local shard in groups of tcfg.parallel, yielding each finished.
 
-    A group is built only when its turn comes and is dropped as soon as the
-    caller lets go, so `parallel` bounds weights and Adam state alike. Adam's
-    moments go back before the yield -- nothing downstream reads them.
+    Built one group at a time, so `parallel` bounds weights and Adam state alike.
     """
     acc = accelerator or Accelerator()
     # shard runs across processes; each re-runs the source forward

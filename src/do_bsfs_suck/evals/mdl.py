@@ -46,7 +46,8 @@ class MDLStats:
             .long()
             .clamp(0, HIST_BINS - 1)
         )
-        self.hist += torch.bincount(idx, minlength=HIST_BINS).double()
+        counts = torch.bincount(idx, minlength=HIST_BINS).double()
+        self.hist += counts.to(self.hist.device)
 
         self.resid_sq += (x - x_hat).pow(2).sum().item()
         self.tokens += x.shape[0]
