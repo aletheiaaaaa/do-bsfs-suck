@@ -23,7 +23,7 @@ grid:
 
 shuffled:
   enabled: true
-  block_dims: [4, 8, 16]
+  block_dims: [4, 16]
   active_dims: 64
 
 train:
