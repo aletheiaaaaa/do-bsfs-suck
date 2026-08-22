@@ -16,8 +16,8 @@ eval_tokens: 2000000
 
 grid:
   dict_dims: 16384
-  block_dims: [1, 2, 4, 8, 16]
-  active_dims: [32, 64, 128]
+  block_dims: [1, 2, 4, 8]
+  active_dims: [32, 64]
   variants: [vanilla, grassmann, group_lasso]
   matched_k: 32
 
@@ -30,6 +30,8 @@ train:
   lr: 1.2e-3
   batch_tokens: 16384
   warmup_frac: 0.02
+  # featurizers per stream pass
+  parallel: 1
   dead_after_tokens: 10000000
   aux_k: 64
   aux_coeff: 0.03125

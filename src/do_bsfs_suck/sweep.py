@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -43,7 +44,7 @@ from do_bsfs_suck.evals.splitting import (
 from do_bsfs_suck.randomize import RandomizeSpec
 from do_bsfs_suck.stream import ActivationStream
 from do_bsfs_suck.tracking import Tracker
-from do_bsfs_suck.train import cotrain
+from do_bsfs_suck.train import train_groups
 
 # arms where a ground-truth attribute is linearly decodable; the rest are nulls
 COMPARISON: tuple[Condition, ...] = ("trained", "rand_excl_emb")
@@ -107,13 +108,16 @@ def shuffled_grid(
     return list(dict.fromkeys(out))
 
 
-def _trained_directions(runs, layers, acc=None) -> dict[int, torch.Tensor]:
-    """The b=1 vanilla decoder per layer, which the shuffled control regroups."""
-    out = {}
+def _keep_directions(found: dict[int, torch.Tensor], runs) -> None:
+    """Copy out the b=1 vanilla decoders before their group is dropped."""
     for run in runs:
         if run.cfg.variant == "vanilla" and run.cfg.block_dim == 1:
-            out.setdefault(run.layer, run.model.W_dec.detach().squeeze(1).cpu().clone())
+            found.setdefault(run.layer, run.model.W_dec.detach().squeeze(1).cpu().clone())
 
+
+def _gather_directions(found: dict[int, torch.Tensor], layers, acc=None):
+    """The b=1 vanilla decoder per layer, which the shuffled control regroups."""
+    out = dict(found)
     if acc is not None and acc.num_processes > 1:
         from accelerate.utils import gather_object
 
@@ -158,8 +162,21 @@ def _eval_pass(
     }
 
 
-def _concept_evals(runs, model, tokenizer, layers, scale, mean, seed: int) -> dict[str, dict]:
-    """Absorption and splitting, which need ground-truth token attributes."""
+@dataclass(frozen=True)
+class ConceptContext:
+    """Per layer, everything absorption and splitting need that is not a run.
+
+    Fitting the probes costs a forward pass over the vocabulary, so it is done
+    once per condition rather than once per group of featurizers.
+    """
+
+    acts: dict[int, torch.Tensor]  # spelling activations, test split only
+    letters: dict[int, list[str]]  # their labels, in the same order
+    probes: dict[int, dict]  # letter -> (direction, prediction on the split)
+    directions: dict[int, torch.Tensor]
+
+
+def _concept_context(model, tokenizer, layers, scale, mean, seed: int) -> ConceptContext:
     spell = spelling_tokens(tokenizer, limit=4000, seed=seed)
     spell_acts = token_activations(model, tokenizer, spell, layers, scale=scale, mean=mean)
 
@@ -167,35 +184,88 @@ def _concept_evals(runs, model, tokenizer, layers, scale, mean, seed: int) -> di
     vocab_set = SpellingSet(ids, strings, ["?"] * len(ids))
     vocab_acts = token_activations(model, tokenizer, vocab_set, layers, scale=scale, mean=mean)
 
-    probes = {L: fit_letter_probes(spell_acts[L], spell.letters, seed=seed) for L in layers}
-    directions = {
-        L: supervised_directions(vocab_acts[L], strings) for L in layers
-    }
+    acts, letters, probes = {}, {}, {}
+    for L in layers:
+        fitted = fit_letter_probes(spell_acts[L], spell.letters, seed=seed)
+        idx = next(iter(fitted.values())).test_idx
+        acts[L] = spell_acts[L][idx]
+        letters[L] = [spell.letters[i] for i in idx]
+        probes[L] = {letter: (p.direction, p.predicted) for letter, p in fitted.items()}
 
+    return ConceptContext(
+        acts, letters, probes,
+        {L: supervised_directions(vocab_acts[L], strings) for L in layers},
+    )
+
+
+def _concept_evals(runs, ctx: ConceptContext) -> dict[str, dict]:
+    """Absorption and splitting, which need ground-truth token attributes."""
     out = {}
     for r in runs:
         L = r.layer
-        pr = {
-            letter: (p.direction, p.predicted) for letter, p in probes[L].items()
-        }
-        idx = next(iter(probes[L].values())).test_idx
-        letters_te = [spell.letters[i] for i in idx]
-        per_letter = absorption(r.model, spell_acts[L][idx], letters_te, pr)
+        per_letter = absorption(r.model, ctx.acts[L], ctx.letters[L], ctx.probes[L])
         out[r.key] = {
             **summarize_absorption(per_letter),
-            **summarize_splits(split_counts(r.model, directions[L])),
+            **summarize_splits(split_counts(r.model, ctx.directions[L])),
         }
     return out
 
 
-def _ioi_evals(runs, model, tokenizer, layers, scale, mean, seed: int) -> dict[str, dict]:
-    """Makelov et al.'s IOI oversplitting check."""
+def _ioi_context(model, tokenizer, layers, scale, mean, seed: int) -> dict[int, torch.Tensor]:
     data = make_ioi(tokenizer, n=2048, seed=seed)
     acts = ioi_activations(model, tokenizer, data, layers, scale=scale, mean=mean)
-    dirs = {L: ioi_directions(acts[L], data) for L in layers}
+    return {L: ioi_directions(acts[L], data) for L in layers}
+
+
+def _ioi_evals(runs, dirs: dict[int, torch.Tensor]) -> dict[str, dict]:
+    """Makelov et al.'s IOI oversplitting check."""
     return {
         r.key: summarize_ioi(pos_split_counts(r.model, dirs[r.layer])) for r in runs
     }
+
+
+@dataclass
+class Scoring:
+    """Everything a group is scored against, fixed once per condition.
+
+    Groups are evaluated as they finish training so their models can be freed,
+    which means every metric has to be reducible to rows here and now.
+    """
+
+    condition: Condition
+    model_name: str
+    layers: tuple[int, ...]
+    eval_stream: ActivationStream
+    concept: ConceptContext
+    ioi: dict[int, torch.Tensor] | None
+    done: set[tuple]
+    # b=1 vanilla decoders, kept back for the shuffled control
+    found: dict[int, torch.Tensor] = field(default_factory=dict)
+
+    def rows(self, group) -> list[dict]:
+        _keep_directions(self.found, group)
+        metrics = _eval_pass(group, self.eval_stream, self.layers)
+        concept = _concept_evals(group, self.concept)
+        if self.ioi is not None:
+            extra = _ioi_evals(group, self.ioi)
+            concept = {k: {**v, **extra.get(k, {})} for k, v in concept.items()}
+
+        out = []
+        for r in group:
+            # a condition retrains whole; don't append finished configs twice
+            if (self.condition, r.layer, r.cfg.name) in self.done:
+                continue
+            out.append(
+                {
+                    "condition": self.condition, "layer": r.layer, "name": r.cfg.name,
+                    "variant": r.cfg.variant, "block_dim": r.cfg.block_dim,
+                    "active_dims": r.cfg.active_dims, "n_blocks": r.cfg.n_blocks,
+                    "k": r.cfg.k, "seed": r.cfg.seed, "model": self.model_name,
+                    "is_null_arm": self.condition in NULLS,
+                    **metrics[r.key], **concept[r.key],
+                }
+            )
+        return out
 
 
 def run_sweep(
@@ -246,55 +316,52 @@ def run_sweep(
             stream.close()
             continue
 
-        runs = cotrain(
-            stream, specs, train_cfg, device=device, tracker=tracker, accelerator=acc
+        # the eval arms reuse the training calibration, so fix it up front
+        stream.calibrate()
+        eval_stream = ActivationStream(
+            dataclasses.replace(scfg, n_tokens=eval_tokens, data_seed=seed + 1000),
+            spec, device=device,
         )
+        eval_stream.scale, eval_stream.mean = stream.scale, stream.mean
+        concept_ctx = _concept_context(
+            stream.model, tokenizer, layers, stream.scale, stream.mean, seed
+        )
+        ioi_ctx = (
+            _ioi_context(stream.model, tokenizer, layers, stream.scale, stream.mean, seed)
+            if ioi
+            else None
+        )
+
+        scoring = Scoring(
+            condition=condition, model_name=model_name, layers=layers,
+            eval_stream=eval_stream, concept=concept_ctx, ioi=ioi_ctx, done=done,
+        )
+        fresh: list[dict] = []
+
+        for group in train_groups(
+            stream, specs, train_cfg, device=device, tracker=tracker, accelerator=acc
+        ):
+            fresh.extend(scoring.rows(group))
+            del group
 
         # the shuffled control regroups a *trained* b=1 dictionary
         if shuffled is not None:
-            directions = _trained_directions(runs, layers, acc)
-            shuf_cfgs = shuffled(stream.d_model, seed=seed)
             shuf_stream = ActivationStream(
                 dataclasses.replace(scfg, data_seed=seed + 500), spec, device=device
             )
             shuf_stream.scale, shuf_stream.mean = stream.scale, stream.mean
-            runs += cotrain(
-                shuf_stream, {L: shuf_cfgs for L in layers}, train_cfg,
-                device=device, directions=directions, tracker=tracker, accelerator=acc,
-            )
+            for group in train_groups(
+                shuf_stream, {L: shuffled(stream.d_model, seed=seed) for L in layers},
+                train_cfg, device=device,
+                directions=_gather_directions(scoring.found, layers, acc),
+                tracker=tracker, accelerator=acc,
+            ):
+                fresh.extend(scoring.rows(group))
+                del group
             shuf_stream.close()
 
-        eval_stream = ActivationStream(
-            dataclasses.replace(scfg, n_tokens=eval_tokens, data_seed=seed + 1000), spec, device=device
-        )
-        eval_stream.scale = stream.scale
-        eval_stream.mean = stream.mean
-        metrics = _eval_pass(runs, eval_stream, layers)
         eval_stream.close()
-
-        concept = _concept_evals(runs, stream.model, tokenizer, layers, stream.scale, stream.mean, seed)
-        if ioi:
-            extra = _ioi_evals(
-                runs, stream.model, tokenizer, layers, stream.scale, stream.mean, seed
-            )
-            concept = {k: {**v, **extra.get(k, {})} for k, v in concept.items()}
         stream.close()
-
-        fresh: list[dict] = []
-        for r in runs:
-            # a condition retrains whole; don't append finished configs twice
-            if (condition, r.layer, r.cfg.name) in done:
-                continue
-            fresh.append(
-                {
-                    "condition": condition, "layer": r.layer, "name": r.cfg.name,
-                    "variant": r.cfg.variant, "block_dim": r.cfg.block_dim,
-                    "active_dims": r.cfg.active_dims, "n_blocks": r.cfg.n_blocks,
-                    "k": r.cfg.k, "seed": r.cfg.seed, "model": model_name,
-                    "is_null_arm": condition in NULLS,
-                    **metrics[r.key], **concept[r.key],
-                }
-            )
         # each rank trained a different shard
         if acc.num_processes > 1:
             from accelerate.utils import gather_object

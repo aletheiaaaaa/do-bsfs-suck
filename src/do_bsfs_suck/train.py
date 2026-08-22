@@ -1,4 +1,5 @@
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import torch
@@ -25,6 +26,15 @@ class Run:
     @property
     def key(self) -> str:
         return f"L{self.layer}/{self.cfg.name}"
+
+    def release_optimizer(self) -> None:
+        """Drop Adam's moments once this run is trained.
+
+        Nothing downstream reads them, and they are two extra copies of every
+        weight -- held to the end of the sweep they cost more than the models.
+        Only safe because groups partition the runs: each is trained once.
+        """
+        self.opt.state.clear()
 
 
 def plan(specs: dict[int, list[FeaturizerConfig]]) -> list[tuple[int, FeaturizerConfig]]:
@@ -73,18 +83,56 @@ def cotrain(
     tracker: Tracker | None = None,
     accelerator: Accelerator | None = None,
 ) -> list[Run]:
-    """Train every featurizer for every layer, in a single stream pass."""
+    """Train every featurizer for every layer, keeping all of them.
+
+    Convenience over `train_groups` for callers small enough to hold the whole
+    grid; `run_sweep` consumes the groups instead, so nothing but the group in
+    hand stays resident.
+    """
+    return [
+        run
+        for group in train_groups(
+            stream, specs, tcfg, device, directions, tracker, accelerator
+        )
+        for run in group
+    ]
+
+
+def train_groups(
+    stream: ActivationStream,
+    specs: dict[int, list[FeaturizerConfig]],
+    tcfg: TrainConfig,
+    device: str | None = None,
+    directions: dict[int, torch.Tensor] | None = None,
+    tracker: Tracker | None = None,
+    accelerator: Accelerator | None = None,
+) -> Iterator[list[Run]]:
+    """Train the local shard in groups of tcfg.parallel, yielding each finished.
+
+    A group is built only when its turn comes and is dropped as soon as the
+    caller lets go, so `parallel` bounds weights and Adam state alike. Adam's
+    moments go back before the yield -- nothing downstream reads them.
+    """
     acc = accelerator or Accelerator()
     # shard runs across processes; each re-runs the source forward
     mine = plan(specs)[acc.process_index :: acc.num_processes]
-    runs = make_runs(mine, tcfg.lr, device or acc.device, directions)
-    if not runs:
-        return runs
-    _train(stream, runs, tcfg, acc, stream.cfg.condition, tracker or Tracker())
-    return runs
+    size = max(tcfg.parallel, 1)
+    chunks = [mine[i : i + size] for i in range(0, len(mine), size)]
+
+    for n, chunk in enumerate(chunks, 1):
+        group = make_runs(chunk, tcfg.lr, device or acc.device, directions)
+        _train_group(
+            stream, group, tcfg, acc,
+            f"{stream.cfg.condition} {n}/{len(chunks)}", tracker or Tracker(),
+        )
+        for run in group:
+            run.release_optimizer()
+        yield group
+        # the caller is done with it; do not pin it while the next one builds
+        del group
 
 
-def _train(
+def _train_group(
     stream: ActivationStream,
     runs: list[Run],
     tcfg: TrainConfig,
@@ -92,7 +140,7 @@ def _train(
     desc: str,
     tracker: Tracker,
 ) -> None:
-    # one forward captures every layer, so runs spanning layers are free
+    # one forward captures every layer, so a group spanning layers is free
     layers = sorted({r.layer for r in runs})
     prefix = stream.cfg.condition
     total_steps = max(stream.cfg.n_tokens // tcfg.batch_tokens, 1)
